@@ -417,6 +417,10 @@ func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, feedID
 		FeedID: feedID,
 		Data:   result,
 	}
+	// 영상 URL 평탄화: 프론트가 간단히 쓸 수 있도록 최상위 필드로 노출
+	if result.Note.Video != nil {
+		response.VideoURL = result.Note.Video.VideoURL()
+	}
 
 	return response, nil
 }

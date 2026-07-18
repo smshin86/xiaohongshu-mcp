@@ -61,8 +61,9 @@ type SearchFeedsRequest struct {
 
 // FeedDetailResponse Feed详情响应
 type FeedDetailResponse struct {
-	FeedID string `json:"feed_id"`
-	Data   any    `json:"data"`
+	FeedID   string `json:"feed_id"`
+	Data     any    `json:"data"`
+	VideoURL string `json:"video_url,omitempty"` // 재생 가능한 영상 직링크(상세 페이지에서 추출)
 }
 
 // PostCommentRequest 发表评论请求
