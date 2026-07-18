@@ -122,6 +122,8 @@ function renderLoginState() {
     setStatus(state.username ? `로그인됨: ${state.username}` : "");
   } else {
     show($("login-section"));
+    // 로그아웃/미인증 상태에서는 검색 패널을 숨김
+    hide($("search-section"));
     $("login-status").textContent = "QR 코드로 로그인 버튼을 눌러주세요.";
     $("qrcode-img").hidden = true;
   }
@@ -130,24 +132,29 @@ function renderLoginState() {
 let pollTimer = null;
 async function startLogin() {
   $("login-status").textContent = "QR 코드를 가져오는 중…";
-  const res = await api.loginQrcode();
-  if (!res.success) {
-    $("login-status").textContent = "오류: " + (res.message || "");
-    return;
+  try {
+    const res = await api.loginQrcode();
+    if (!res.success) {
+      $("login-status").textContent = "오류: " + (res.message || "");
+      return;
+    }
+    const data = res.data || {};
+    if (data.is_logged_in) {
+      state.loggedIn = true;
+      renderLoginState();
+      return;
+    }
+    // img 가 data: 접두사 없는 순수 base64 면 보정
+    let src = data.img || "";
+    if (src && !src.startsWith("data:")) src = "data:image/png;base64," + src;
+    $("qrcode-img").src = src;
+    $("qrcode-img").hidden = false;
+    $("login-status").textContent = "샤오홍슈 앱으로 아래 QR을 스캔하세요.";
+    pollLoginStatus();
+  } catch (e) {
+    // 서버에 연결할 수 없는 경우 사용자에게 안내
+    $("login-status").textContent = "서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.";
   }
-  const data = res.data || {};
-  if (data.is_logged_in) {
-    state.loggedIn = true;
-    renderLoginState();
-    return;
-  }
-  // img 가 data: 접두사 없는 순수 base64 면 보정
-  let src = data.img || "";
-  if (src && !src.startsWith("data:")) src = "data:image/png;base64," + src;
-  $("qrcode-img").src = src;
-  $("qrcode-img").hidden = false;
-  $("login-status").textContent = "샤오홍슈 앱으로 아래 QR을 스캔하세요.";
-  pollLoginStatus();
 }
 
 async function pollLoginStatus() {
