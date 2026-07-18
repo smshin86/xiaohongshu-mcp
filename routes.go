@@ -53,5 +53,11 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 		api.GET("/user/me", appServer.myProfileHandler)
 	}
 
+	// 한국어 검색 페이지 정적 서빙 (같은 출처)
+	router.Static("/static", "./web")
+	router.GET("/", func(c *gin.Context) {
+		c.File("./web/index.html")
+	})
+
 	return router
 }

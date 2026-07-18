@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>샤오홍슈 영상 검색</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="header">
+    <h1>샤오홍슈 영상 검색</h1>
+    <p class="subtitle">중국어 검색어로 영상을 찾아보세요</p>
+  </header>
+  <main id="app">
+    <!-- 로그인 섹션 -->
+    <section id="login-section" class="hidden">
+      <button id="login-btn">QR 코드로 로그인</button>
+      <img id="qrcode-img" alt="로그인 QR" hidden>
+      <p id="login-status"></p>
+    </section>
+    <!-- 검색 섹션 -->
+    <section id="search-section">
+      <form id="search-form">
+        <input id="keyword" type="text" placeholder="중국어 검색어 입력 (예: 美食 · 旅行 · 化妆)" autocomplete="off" required>
+        <button type="submit">검색</button>
+      </form>
+      <p id="status"></p>
+      <div id="results" class="grid"></div>
+    </section>
+    <!-- 영상 모달 -->
+    <div id="video-modal" class="modal hidden">
+      <div class="modal-body">
+        <button id="modal-close" class="modal-close" aria-label="닫기">×</button>
+        <video id="video-player" controls playsinline></video>
+        <button id="copy-url-btn">URL 복사</button>
+      </div>
+    </div>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
