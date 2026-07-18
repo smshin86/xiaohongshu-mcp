@@ -32,6 +32,7 @@ let capabilities = null; // GET /api/v1/search/capabilities 결과
 let currentItem = null;  // 모달에 띄운 아이템(post_url 포함; 재생실패 대체용)
 let currentVideoURL = ""; // detail 로 해결한 URL 포함, modal/copy 의 단일 기준
 let lastSearchData = null; // 토글 시 side/pending 상태 재렌더용(탭 메모리만)
+let fallbackFired = false; // 모달 fallback(onerror/play.catch) 중복 실행 가드
 
 // ====== API 클라이언트 (같은 출처) ======
 const api = {
@@ -234,15 +235,25 @@ function openVideoModal(it, url) {
   else { link.removeAttribute("href"); hide(link); }
   show($("video-modal"));
   // 재생 실패(error 이벤트) → 원본 페이지로 대체 이동.
+  // onerror 와 play().catch() 가 모두 발생할 수 있으므로 fallbackFired 로 한 번만 연다.
   v.onended = null;
-  v.onerror = () => { if (it && it.post_url) { window.open(it.post_url, "_blank", "noopener"); closeVideoModal(); } };
-  v.play().catch(() => { if (it && it.post_url) window.open(it.post_url, "_blank", "noopener"); });
+  v.onerror = () => {
+    if (fallbackFired) return;
+    fallbackFired = true;
+    if (it && it.post_url) { window.open(it.post_url, "_blank", "noopener"); closeVideoModal(); }
+  };
+  v.play().catch(() => {
+    if (fallbackFired) return;
+    fallbackFired = true;
+    if (it && it.post_url) window.open(it.post_url, "_blank", "noopener");
+  });
 }
 function closeVideoModal() {
   const v = $("video-player");
   v.pause(); v.removeAttribute("src"); v.onerror = null; v.load();
   currentVideoURL = "";
   currentItem = null;
+  fallbackFired = false; // 다음 모달 오픈을 위해 가드 리셋
   hide($("video-modal"));
 }
 async function copyVideoUrl() {
