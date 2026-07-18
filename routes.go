@@ -51,6 +51,8 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 		api.POST("/feeds/comment", appServer.postCommentHandler)
 		api.POST("/feeds/comment/reply", appServer.replyCommentHandler)
 		api.GET("/user/me", appServer.myProfileHandler)
+		api.POST("/search", appServer.unifiedSearchHandler)
+		api.GET("/search/capabilities", appServer.searchCapabilitiesHandler)
 	}
 
 	// 한국어 검색 페이지 정적 서빙 (같은 출처)

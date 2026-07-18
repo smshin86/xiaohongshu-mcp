@@ -11,11 +11,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
+	"github.com/xpzouying/xiaohongshu-mcp/search"
 )
 
 // AppServer 应用服务器结构体，封装所有服务和处理器
 type AppServer struct {
 	xiaohongshuService *XiaohongshuService
+	aggregator         *search.AggregatorService
 	mcpServer          *mcp.Server
 	router             *gin.Engine
 	httpServer         *http.Server
@@ -29,6 +31,18 @@ func NewAppServer(xiaohongshuService *XiaohongshuService) *AppServer {
 
 	// 初始化 MCP Server（需要在创建 appServer 之后，因为工具注册需要访问 appServer）
 	appServer.mcpServer = InitMCPServer(appServer)
+
+	// 통합 검색 aggregator 조립(SIDECAR_URL 환경변수로 사이드카 주소 덮어쓰기).
+	sidecarURL := "http://127.0.0.1:18061"
+	if v := os.Getenv("SIDECAR_URL"); v != "" {
+		sidecarURL = v
+	}
+	sidecar := NewSidecarClient(sidecarURL, 0)
+	appServer.aggregator = search.NewAggregatorService(map[string]search.VideoAdapter{
+		"xiaohongshu": NewXhsAdapter(xiaohongshuService),
+		"douyin":      NewDouyinAdapter(sidecar),
+		"tiktok":      NewTikTokAdapter(sidecar),
+	})
 
 	return appServer
 }

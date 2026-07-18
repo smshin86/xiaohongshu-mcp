@@ -30,6 +30,15 @@ func NewAggregatorService(adapters map[string]VideoAdapter) *AggregatorService {
 	return &AggregatorService{adapters: adapters}
 }
 
+// Availability 는 각 어댑터의 현재 가용성을 반환(capability endpoint 용).
+func (s *AggregatorService) Availability(ctx context.Context) map[string]Availability {
+	out := make(map[string]Availability, len(s.adapters))
+	for name, ad := range s.adapters {
+		out[name] = ad.Available(ctx)
+	}
+	return out
+}
+
 // Search 는 요청된 플랫폼에 대해 병렬 검색 후 머지/필터/정렬한다.
 // 한 사이드 실패/미가용은 SideResult 로 흡수되고 전체는 실패하지 않는다(err 는 항상 nil).
 func (s *AggregatorService) Search(ctx context.Context, req AggregatorRequest) (*AggregatedResult, error) {
