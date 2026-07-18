@@ -162,6 +162,47 @@ async function pollLoginStatus() {
   pollTimer = setTimeout(pollLoginStatus, 2000);
 }
 
+// ====== 영상 재생 모달 ======
+async function playFeed(feed) {
+  setStatus("영상 불러오는 중…", true);
+  try {
+    const res = await api.feedDetail(feed.id, feed.xsecToken);
+    if (!res.success || !(res.data && res.data.video_url)) {
+      setStatus("영상 URL을 가져오지 못했습니다.");
+      return;
+    }
+    openVideoModal(res.data.video_url);
+    setStatus("");
+  } catch (e) {
+    setStatus("영상을 불러오는 중 오류가 발생했습니다.");
+  }
+}
+
+let currentVideoUrl = "";
+function openVideoModal(url) {
+  currentVideoUrl = url;
+  const v = $("video-player");
+  v.src = url;
+  show($("video-modal")); // .hidden 제거로 모달 표시
+  v.play().catch(() => {});
+}
+function closeVideoModal() {
+  const v = $("video-player");
+  v.pause();
+  v.removeAttribute("src");
+  v.load();
+  hide($("video-modal"));
+}
+async function copyVideoUrl() {
+  try {
+    await navigator.clipboard.writeText(currentVideoUrl);
+    $("copy-url-btn").textContent = "복사됨 ✓";
+    setTimeout(() => ($("copy-url-btn").textContent = "URL 복사"), 1500);
+  } catch (e) {
+    prompt("이 URL을 복사하세요:", currentVideoUrl);
+  }
+}
+
 // ====== 초기화 ======
 async function init() {
   try {
@@ -183,6 +224,26 @@ async function init() {
     }
     const kw = $("keyword").value.trim();
     if (kw) doSearch(kw);
+  });
+
+  // 결과 그리드 클릭 위임 → 카드 재생
+  $("results").addEventListener("click", (ev) => {
+    const card = ev.target.closest(".card");
+    if (!card) return;
+    playFeed({
+      id: card.getAttribute("data-id"),
+      xsecToken: card.getAttribute("data-token"),
+    });
+  });
+
+  // 모달 버튼
+  $("modal-close").addEventListener("click", closeVideoModal);
+  $("copy-url-btn").addEventListener("click", copyVideoUrl);
+  $("video-modal").addEventListener("click", (ev) => {
+    if (ev.target === $("video-modal")) closeVideoModal();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeVideoModal();
   });
 }
 
