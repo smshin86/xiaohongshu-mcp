@@ -16,7 +16,7 @@ func main() {
 	)
 	flag.BoolVar(&headless, "headless", true, "是否无头模式")
 	flag.StringVar(&binPath, "bin", "", "浏览器二进制文件路径")
-	flag.StringVar(&port, "port", ":18060", "端口")
+	flag.StringVar(&port, "port", "127.0.0.1:18060", "端口")
 	flag.Parse()
 
 	if len(binPath) == 0 {
