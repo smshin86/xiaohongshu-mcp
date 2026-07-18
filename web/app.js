@@ -1,257 +1,301 @@
+// web/app.js — DOM wiring(검색 전용). 순수 로직은 lib.js(import). 로그인은 settings.js.
+import {
+  PLATFORMS, initialState, togglePlatform, toggleAllPlatforms, platformsFromState,
+  pendingPlatforms, visibleItems, selectLoadMorePlatforms,
+  resetForNewSearch, ingestItems, parseFilters,
+} from "./lib.js";
+
+// ====== DOM 헬퍼 ======
+const $ = (id) => document.getElementById(id); // bare id ('#' 없음)
+const show = (el) => el && el.classList.remove("hidden");
+const hide = (el) => el && el.classList.add("hidden");
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+function setStatus(msg, spinner) {
+  // DOM API 로 조립: 서버 문자열(msg)이 HTML 로 해석되지 않도록 text node 사용
+  const el = $("status");
+  el.replaceChildren();
+  if (spinner) {
+    const s = document.createElement("span");
+    s.className = "spinner";
+    el.appendChild(s);
+  }
+  el.appendChild(document.createTextNode(msg || ""));
+}
+
+// ====== 상태 ======
+let state = initialState();
+let capabilities = null; // GET /api/v1/search/capabilities 결과
+let currentItem = null;  // 모달에 띄운 아이템(post_url 포함; 재생실패 대체용)
+let currentVideoURL = ""; // detail 로 해결한 URL 포함, modal/copy 의 단일 기준
+let lastSearchData = null; // 토글 시 side/pending 상태 재렌더용(탭 메모리만)
+
 // ====== API 클라이언트 (같은 출처) ======
 const api = {
-  async loginStatus() {
-    const r = await fetch("/api/v1/login/status");
-    return r.json();
-  },
-  async loginQrcode() {
-    const r = await fetch("/api/v1/login/qrcode");
-    return r.json();
-  },
-  async search(keyword) {
-    const r = await fetch("/api/v1/feeds/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ keyword, filters: { note_type: "视频" } }),
+  async capabilities() { const r = await fetch("/api/v1/search/capabilities"); return r.json(); },
+  async search(body) {
+    const r = await fetch("/api/v1/search", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     return r.json();
   },
   async feedDetail(feedId, xsecToken) {
     const r = await fetch("/api/v1/feeds/detail", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        feed_id: feedId,
-        xsec_token: xsecToken,
-        load_all_comments: false,
-      }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feed_id: feedId, xsec_token: xsecToken, load_all_comments: false }),
     });
     return r.json();
   },
 };
 
-// ====== 상태 ======
-const state = { loggedIn: false, username: "", loading: false };
-
-// ====== DOM 헬퍼 ======
-const $ = (id) => document.getElementById(id);
-const show = (el) => el && el.classList.remove("hidden");
-const hide = (el) => el && el.classList.add("hidden");
-
-// ====== 상태 메시지 ======
-function setStatus(msg, spinner) {
-  const el = $("status");
-  el.innerHTML = (spinner ? '<span class="spinner"></span>' : "") + (msg || "");
+// ====== 필터 값 수집 → filters ======
+function collectFilters() {
+  return parseFilters({
+    include: $("f-include").value,
+    exclude: $("f-exclude").value,
+    date_from: $("f-date-from").value,
+    date_to: $("f-date-to").value,
+    duration_min: $("f-duration-min").value,
+    duration_max: $("f-duration-max").value,
+    min_likes: $("f-min-likes").value,
+    min_comments: $("f-min-comments").value,
+    min_favorites: $("f-min-favorites").value,
+    min_views: $("f-min-views").value,
+    per_platform_limit: $("f-per-platform-limit").value,
+    video_only: $("f-video-only").checked,
+  });
 }
 
-// ====== Feed 헬퍼 ======
-const isVideo = (feed) => feed && feed.noteCard && feed.noteCard.type === "video";
-const pickCover = (feed) => {
-  const c = feed.noteCard.cover || {};
-  return c.urlDefault || c.urlPre || "";
-};
-const pickNickname = (feed) => {
-  const u = feed.noteCard.user || {};
-  return u.nickname || u.nickName || "";
-};
+// ====== 플랫폼 칩 → state 반영 + capability 기반 필터 비활성화 ======
+function syncChipsFromState() {
+  document.querySelectorAll("#platform-chips input[data-platform]").forEach((cb) => {
+    cb.checked = state.selected.has(cb.dataset.platform);
+  });
+  const all = $("platform-all");
+  if (all) all.setAttribute("aria-pressed", String(PLATFORMS.every((p) => state.selected.has(p))));
+}
+function applyCapabilityDisabling() {
+  if (!(capabilities && capabilities.platforms)) return;
+  const sel = platformsFromState(state);
+  const hasMetric = (p, key) => (capabilities.platforms[p]?.metrics || []).includes(key);
+  const hasFilter = (p, key) => {
+    const c = capabilities.platforms[p] || {};
+    return [...(c.native_filters || []), ...(c.post_filters || [])].includes(key);
+  };
+  const toggle = (id, disable) => { const el = $(id); if (el) el.disabled = disable; };
+  toggle("f-min-views", sel.every((p) => !hasMetric(p, "views")));
+  toggle("f-duration-min", sel.every((p) => !hasFilter(p, "duration_min")));
+  toggle("f-duration-max", sel.every((p) => !hasFilter(p, "duration_max")));
+  toggle("f-date-to", sel.every((p) => !hasFilter(p, "date_to")));
+  toggle("f-date-from", sel.every((p) => !hasFilter(p, "date_from")));
+}
 
-// ====== 카드 렌더 ======
-function cardHTML(feed) {
-  const i = feed.noteCard.interactInfo || {};
+// ====== 사이드 상태 패널(status/cursor 용 sides 만 사용) ======
+function renderSideStatus(data) {
+  const ul = $("side-status");
+  const sides = (data && data.sides) || {};
+  const labels = { xiaohongshu: "XHS", douyin: "Douyin", tiktok: "TikTok" };
+  const rows = PLATFORMS.map((p) => {
+    const s = sides[p];
+    if (!s) return "";
+    const label = labels[p];
+    if (!s.available || !s.available.available) {
+      const reason = (s.available && s.available.reason) || s.error || "준비 중";
+      return `<li class="side-unavailable"><b>${label}</b>: ${escapeHtml(reason)}</li>`;
+    }
+    return `<li class="side-ok"><b>${label}</b>: (더 보기 ${s.has_more ? "가능" : "불가"})</li>`;
+  }).filter(Boolean);
+  const pending = pendingPlatforms(state).map(
+    (p) => `<li class="side-pending"><b>${labels[p]}</b>: 검색 실행 필요</li>`
+  );
+  ul.innerHTML = [...rows, ...pending].join("");
+}
+
+// ====== 카드 렌더 (data-idx 로 조회, escape 불필요) ======
+function metric(v, prefix) { return v == null ? "" : `${prefix} ${Number(v).toLocaleString()}`; }
+function cardHTML(it, idx) {
   const meta = [
-    `❤ ${i.likedCount || 0}`,
-    `💬 ${i.commentCount || 0}`,
-    `🔖 ${i.collectedCount || 0}`,
-  ].join(" · ");
-  const cover = pickCover(feed);
-  const nick = pickNickname(feed);
+    metric(it.likes, "❤"), metric(it.comments, "💬"), metric(it.favorites, "🔖"),
+    metric(it.views, "👁"), metric(it.shares, "↗"),
+  ].filter(Boolean).join(" · ");
+  const cover = it.thumbnail_url
+    ? `<img class="card-cover" src="${escapeHtml(it.thumbnail_url)}" alt="" loading="lazy">`
+    : `<div class="card-cover"></div>`;
+  const badge = it.platform === "xiaohongshu" ? "XHS" : it.platform === "douyin" ? "Douyin" : "TikTok";
   return `
-    <article class="card" data-id="${feed.id}" data-token="${feed.xsecToken || ""}">
+    <article class="card" data-idx="${idx}">
       <div style="position:relative">
-        ${cover ? `<img class="card-cover" src="${cover}" alt="" loading="lazy">` : `<div class="card-cover"></div>`}
-        <span class="badge-video">▶ 영상</span>
+        ${cover}
+        <span class="badge-platform">${badge}</span>
       </div>
       <div class="card-body">
-        <p class="card-title">${escapeHtml(feed.noteCard.displayTitle || "")}</p>
-        <div class="card-meta"><span>${escapeHtml(nick)}</span><span>${meta}</span></div>
+        <p class="card-title">${escapeHtml(it.title)}</p>
+        <div class="card-meta"><span>${escapeHtml(it.author)}</span><span>${meta}</span></div>
       </div>
     </article>`;
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
-
-function renderCards(feeds) {
-  const videos = (feeds || []).filter(isVideo);
+function renderResults() {
   const grid = $("results");
-  if (videos.length === 0) {
+  const items = visibleItems(state);
+  if (!items.length) {
     grid.innerHTML = "";
     setStatus("검색 결과가 없습니다.");
+    hide($("more-btn"));
     return;
   }
-  setStatus(`영상 결과 ${videos.length}개`);
-  grid.innerHTML = videos.map(cardHTML).join("");
+  setStatus(`영상 결과 ${items.length}개`);
+  grid.innerHTML = items.map((it) => cardHTML(it, state.items.indexOf(it))).join("");
+  if (selectLoadMorePlatforms(state).length > 0) show($("more-btn"));
+  else hide($("more-btn"));
 }
 
-// ====== 검색 ======
-async function doSearch(keyword) {
-  state.loading = true;
-  setStatus("검색 중…", true);
-  try {
-    const res = await api.search(keyword);
-    if (!res.success) {
-      setStatus("오류가 발생했습니다: " + (res.message || ""));
-      return;
-    }
-    renderCards(res.data && res.data.feeds);
-  } catch (e) {
-    setStatus("서버에 연결할 수 없습니다. 서버가 실행 중인지 확인해주세요.");
-  } finally {
-    state.loading = false;
-  }
-}
-
-// ====== 로그인 ======
-function renderLoginState() {
-  if (state.loggedIn) {
-    hide($("login-section"));
-    show($("search-section"));
-    setStatus(state.username ? `로그인됨: ${state.username}` : "");
-  } else {
-    show($("login-section"));
-    // 로그아웃/미인증 상태에서는 검색 패널을 숨김
-    hide($("search-section"));
-    $("login-status").textContent = "QR 코드로 로그인 버튼을 눌러주세요.";
-    $("qrcode-img").hidden = true;
-  }
-}
-
-let pollTimer = null;
-async function startLogin() {
-  $("login-status").textContent = "QR 코드를 가져오는 중…";
-  try {
-    const res = await api.loginQrcode();
-    if (!res.success) {
-      $("login-status").textContent = "오류: " + (res.message || "");
-      return;
-    }
-    const data = res.data || {};
-    if (data.is_logged_in) {
-      state.loggedIn = true;
-      renderLoginState();
-      return;
-    }
-    // img 가 data: 접두사 없는 순수 base64 면 보정
-    let src = data.img || "";
-    if (src && !src.startsWith("data:")) src = "data:image/png;base64," + src;
-    $("qrcode-img").src = src;
-    $("qrcode-img").hidden = false;
-    $("login-status").textContent = "샤오홍슈 앱으로 아래 QR을 스캔하세요.";
-    pollLoginStatus();
-  } catch (e) {
-    // 서버에 연결할 수 없는 경우 사용자에게 안내
-    $("login-status").textContent = "서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.";
-  }
-}
-
-async function pollLoginStatus() {
-  if (pollTimer) clearTimeout(pollTimer);
-  const res = await api.loginStatus();
-  if (res.data && res.data.is_logged_in) {
-    state.loggedIn = true;
-    state.username = (res.data && res.data.username) || "";
-    renderLoginState();
+// ====== 검색 실행 ======
+async function runSearch(isMore) {
+  const platforms = isMore ? selectLoadMorePlatforms(state) : platformsFromState(state);
+  if (platforms.length === 0) {
+    setStatus("최소 한 개의 플랫폼을 선택하세요.");
     return;
   }
-  pollTimer = setTimeout(pollLoginStatus, 2000);
+  const pageCursors = {};
+  for (const p of platforms) pageCursors[p] = state.pageCursors[p] || "";
+  const body = {
+    keyword: state.keyword,
+    platforms,
+    sort: state.sort,
+    page_cursors: pageCursors,
+    filters: collectFilters(),
+  };
+  state.lastReqPlatforms = platforms;
+  setStatus(isMore ? "더 불러오는 중…" : "검색 중…", true);
+  try {
+    const res = await api.search(body);
+    if (!res.success) {
+      setStatus("오류: " + (res.message || ""));
+      return;
+    }
+    state = ingestItems(state, res.data, platforms);
+    lastSearchData = res.data;
+    renderSideStatus(res.data);
+    renderResults();
+  } catch (e) {
+    setStatus("서버에 연결할 수 없습니다. 잠시 후 다시 시도해주세요.");
+  }
 }
 
-// ====== 영상 재생 모달 ======
-async function playFeed(feed) {
+// ====== 검색 폼 제출 (입력값을 먼저 읽고 state.keyword 검증) ======
+function onSearchSubmit(ev) {
+  ev.preventDefault();
+  const kw = $("keyword").value.trim(); // 입력값을 먼저 읽는다
+  if (!kw) {
+    setStatus("검색어를 입력해 주세요.");
+    return;
+  }
+  state = resetForNewSearch(state, kw, $("sort").value); // 커서/hasMore/아이템 리셋
+  runSearch(false);
+}
+
+// ====== 영상 재생 + 원본 보기(재생 실패 대체) ======
+async function playItem(idx) {
+  const it = state.items[idx];
+  if (!it) return;
+  if (it.video_url) { openVideoModal(it, it.video_url); return; } // Douyin/TikTok
+  if (!it.needs_detail) {
+    if (it.post_url) window.open(it.post_url, "_blank", "noopener");
+    else setStatus("재생하거나 열 수 있는 URL 이 없습니다.");
+    return;
+  }
   setStatus("영상 불러오는 중…", true);
   try {
-    const res = await api.feedDetail(feed.id, feed.xsecToken);
+    const res = await api.feedDetail(it.post_id, it.detail_token);
     if (!res.success || !(res.data && res.data.video_url)) {
-      setStatus("영상 URL을 가져오지 못했습니다.");
+      if (it.post_url) window.open(it.post_url, "_blank", "noopener");
+      else setStatus("영상 URL 을 가져오지 못했습니다.");
       return;
     }
-    openVideoModal(res.data.video_url);
+    openVideoModal(it, res.data.video_url);
     setStatus("");
   } catch (e) {
-    setStatus("영상을 불러오는 중 오류가 발생했습니다.");
+    if (it.post_url) window.open(it.post_url, "_blank", "noopener");
+    else setStatus("영상을 불러오는 중 오류가 발생했습니다.");
   }
 }
-
-let currentVideoUrl = "";
-function openVideoModal(url) {
-  currentVideoUrl = url;
+function openVideoModal(it, url) {
+  currentItem = it;
+  currentVideoURL = url;
   const v = $("video-player");
   v.src = url;
-  show($("video-modal")); // .hidden 제거로 모달 표시
-  v.play().catch(() => {});
+  // 원본 링크 항상 세팅(post_url 없으면 숨김). 재생 실패 시 대체 경로.
+  const link = $("original-link");
+  if (it && it.post_url) { link.href = it.post_url; show(link); }
+  else { link.removeAttribute("href"); hide(link); }
+  show($("video-modal"));
+  // 재생 실패(error 이벤트) → 원본 페이지로 대체 이동.
+  v.onended = null;
+  v.onerror = () => { if (it && it.post_url) { window.open(it.post_url, "_blank", "noopener"); closeVideoModal(); } };
+  v.play().catch(() => { if (it && it.post_url) window.open(it.post_url, "_blank", "noopener"); });
 }
 function closeVideoModal() {
   const v = $("video-player");
-  v.pause();
-  v.removeAttribute("src");
-  v.load();
+  v.pause(); v.removeAttribute("src"); v.onerror = null; v.load();
+  currentVideoURL = "";
+  currentItem = null;
   hide($("video-modal"));
 }
 async function copyVideoUrl() {
+  const url = currentVideoURL || (currentItem && currentItem.post_url) || "";
+  if (!url) return;
   try {
-    await navigator.clipboard.writeText(currentVideoUrl);
+    await navigator.clipboard.writeText(url);
     $("copy-url-btn").textContent = "복사됨 ✓";
     setTimeout(() => ($("copy-url-btn").textContent = "URL 복사"), 1500);
   } catch (e) {
-    prompt("이 URL을 복사하세요:", currentVideoUrl);
+    prompt("이 URL 을 복사하세요:", url);
   }
 }
 
-// ====== 초기화 ======
+// ====== 초기화 (로그인 없음 — 검색 UI 만) ======
 async function init() {
   try {
-    const res = await api.loginStatus();
-    state.loggedIn = res.data && res.data.is_logged_in;
-    state.username = (res.data && res.data.username) || "";
-  } catch (e) {
-    state.loggedIn = false;
-  }
-  renderLoginState();
+    const cap = await api.capabilities();
+    if (cap && cap.success) capabilities = cap.data;
+  } catch (e) { /* 사이드카 미가동 시 무방 */ }
 
-  $("login-btn").addEventListener("click", startLogin);
+  syncChipsFromState();
+  applyCapabilityDisabling();
 
-  $("search-form").addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    if (!state.loggedIn) {
-      setStatus("로그인이 필요합니다.");
-      return;
-    }
-    const kw = $("keyword").value.trim();
-    if (kw) doSearch(kw);
+  $("search-form").addEventListener("submit", onSearchSubmit);
+  $("more-btn").addEventListener("click", () => runSearch(true));
+  $("platform-chips").addEventListener("change", (ev) => {
+    const cb = ev.target.closest("input[data-platform]");
+    if (!cb) return;
+    state = togglePlatform(state, cb.dataset.platform);
+    syncChipsFromState();
+    applyCapabilityDisabling();
+    renderResults();                 // off 즉시 로컬 hide
+    renderSideStatus(lastSearchData); // 새로 on 된 플랫폼은 '검색 실행 필요'
   });
-
-  // 결과 그리드 클릭 위임 → 카드 재생
+  $("platform-all").addEventListener("click", () => {
+    state = toggleAllPlatforms(state);
+    syncChipsFromState();
+    applyCapabilityDisabling();
+    renderResults();
+    renderSideStatus(lastSearchData);
+  });
   $("results").addEventListener("click", (ev) => {
     const card = ev.target.closest(".card");
     if (!card) return;
-    playFeed({
-      id: card.getAttribute("data-id"),
-      xsecToken: card.getAttribute("data-token"),
-    });
+    playItem(Number(card.getAttribute("data-idx"))); // data-idx 로 조회(escape 불필요)
   });
-
-  // 모달 버튼
   $("modal-close").addEventListener("click", closeVideoModal);
   $("copy-url-btn").addEventListener("click", copyVideoUrl);
   $("video-modal").addEventListener("click", (ev) => {
     if (ev.target === $("video-modal")) closeVideoModal();
   });
-  document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") closeVideoModal();
-  });
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeVideoModal(); });
 }
 
 document.addEventListener("DOMContentLoaded", init);

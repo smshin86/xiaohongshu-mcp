@@ -60,6 +60,10 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 	router.GET("/", func(c *gin.Context) {
 		c.File("./web/index.html")
 	})
+	// 로컬 설정 페이지(플랫폼 로그인). 검색 화면과 분리.
+	router.GET("/settings", func(c *gin.Context) {
+		c.File("./web/settings.html")
+	})
 
 	return router
 }

@@ -31,4 +31,30 @@ func TestStaticRoutes(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rr.Code)
 	})
+
+	t.Run("/settings 가 settings.html 제공", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Contains(t, rr.Header().Get("Content-Type"), "text/html")
+		require.Contains(t, rr.Body.String(), "<!doctype html>")
+	})
+
+	t.Run("/static/lib.js 제공", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/static/lib.js", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("/static/settings.js 제공", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/static/settings.js", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+	})
 }

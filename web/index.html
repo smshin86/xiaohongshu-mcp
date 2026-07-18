@@ -3,39 +3,76 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>샤오홍슈 영상 검색</title>
+  <title>참고영상 통합 검색</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <header class="header">
-    <h1>샤오홍슈 영상 검색</h1>
-    <p class="subtitle">중국어 검색어로 영상을 찾아보세요</p>
+    <h1>참고영상 통합 검색</h1>
+    <p class="subtitle">XHS · Douyin · TikTok — 중국어/영어 검색어로 영상을 찾아보세요</p>
+    <a class="settings-link" href="/settings">⚙ 설정 (플랫폼 로그인)</a>
   </header>
   <main id="app">
-    <!-- 로그인 섹션 -->
-    <section id="login-section" class="hidden">
-      <button id="login-btn">QR 코드로 로그인</button>
-      <img id="qrcode-img" alt="로그인 QR" hidden>
-      <p id="login-status"></p>
-    </section>
-    <!-- 검색 섹션 -->
-    <section id="search-section" class="hidden">
+    <!-- 검색: 인증 프롬프트 없음. 플랫폼 로그인은 /settings 에서. -->
+    <section id="search-section">
       <form id="search-form">
-        <input id="keyword" type="text" placeholder="중국어 검색어 입력 (예: 美食 · 旅行 · 化妆)" autocomplete="off" required>
-        <button type="submit">검색</button>
+        <input id="keyword" type="text" placeholder="검색어 (예: 便携风扇 · travel fan)" autocomplete="off" required>
+
+        <fieldset class="chips" id="platform-chips">
+          <legend>플랫폼</legend>
+          <button id="platform-all" type="button" aria-pressed="false">전체</button>
+          <label><input type="checkbox" data-platform="xiaohongshu" checked> XHS</label>
+          <label><input type="checkbox" data-platform="douyin" checked> Douyin</label>
+          <label><input type="checkbox" data-platform="tiktok"> TikTok</label>
+        </fieldset>
+
+        <label class="sort">정렬
+          <select id="sort">
+            <option value="relevance">관련도</option>
+            <option value="popularity">인기</option>
+            <option value="latest">최신</option>
+          </select>
+        </label>
+
+        <details class="filters">
+          <summary>상세 필터</summary>
+          <div class="filter-grid">
+            <label>포함 키워드 <input id="f-include" type="text" placeholder="쉼표/공백 구분"></label>
+            <label>제외 키워드 <input id="f-exclude" type="text"></label>
+            <label>시작일 <input id="f-date-from" type="date"></label>
+            <label>종료일 <input id="f-date-to" type="date"></label>
+            <label>최소 길이(초) <input id="f-duration-min" type="number" min="0"></label>
+            <label>최대 길이(초) <input id="f-duration-max" type="number" min="0"></label>
+            <label>최소 좋아요 <input id="f-min-likes" type="number" min="0"></label>
+            <label>최소 댓글 <input id="f-min-comments" type="number" min="0"></label>
+            <label>최소 즐겨찾기 <input id="f-min-favorites" type="number" min="0"></label>
+            <label>최소 조회수 <input id="f-min-views" type="number" min="0"></label>
+            <label>플랫폼당 한도 <input id="f-per-platform-limit" type="number" min="1" value="15"></label>
+            <label class="check"><input id="f-video-only" type="checkbox" checked disabled> 영상만(M1 고정)</label>
+          </div>
+        </details>
+
+        <button type="submit" id="search-btn">검색</button>
       </form>
+
       <p id="status"></p>
+      <ul id="side-status" class="side-status"></ul>
       <div id="results" class="grid"></div>
+      <button id="more-btn" type="button" class="hidden">더 보기</button>
     </section>
-    <!-- 영상 모달 -->
+
+    <!-- 영상 모달: 재생 + 원본 보기(재생 실패 대체) -->
     <div id="video-modal" class="modal hidden">
       <div class="modal-body">
         <button id="modal-close" class="modal-close" aria-label="닫기">×</button>
         <video id="video-player" controls playsinline></video>
-        <button id="copy-url-btn">URL 복사</button>
+        <div class="modal-actions">
+          <button id="copy-url-btn" type="button">URL 복사</button>
+          <a id="original-link" class="original-link" href="#" target="_blank" rel="noopener noreferrer">원본 보기</a>
+        </div>
       </div>
     </div>
   </main>
-  <script src="/static/app.js"></script>
+  <script type="module" src="/static/app.js"></script>
 </body>
 </html>

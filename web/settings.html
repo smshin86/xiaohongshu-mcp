@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>설정 — 플랫폼 로그인</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="header">
+    <h1>설정</h1>
+    <p class="subtitle">플랫폼 계정은 로컬에서만 사용됩니다. <a href="/">← 검색으로</a></p>
+  </header>
+  <main id="settings-app">
+    <section class="settings-card">
+      <h2>샤오홍슈(XHS) 로그인</h2>
+      <p class="muted">검색 화면에는 인증 프롬프트가 표시되지 않습니다. XHS 영상 강화를 원할 때만 이곳에서 로그인하세요.</p>
+      <button id="login-btn" type="button">QR 코드로 로그인</button>
+      <img id="qrcode-img" alt="로그인 QR" hidden>
+      <p id="login-status"></p>
+    </section>
+  </main>
+  <script type="module" src="/static/settings.js"></script>
+</body>
+</html>
