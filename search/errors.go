@@ -10,6 +10,7 @@ var (
 	ErrUnavailable = errors.New("platform unavailable")   // 쿠키/ms_token 미설정·만료(503)
 	ErrBadGateway  = errors.New("platform search failed") // 검색/서명/antibot 실패(502)
 	ErrUnreachable = errors.New("platform unreachable")   // 연결 실패/네트워크
+	ErrForbidden   = errors.New("platform forbidden")     // 다운로드 403/antibot 차단
 )
 
 // SideErrorMessage 는 err 를 플랫폼별 고정 안전 한국어 메시지로 변환.

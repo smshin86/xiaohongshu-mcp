@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -69,6 +70,10 @@ type SidecarClient struct {
 	baseURL string
 	http    *http.Client
 
+	// downloadHTTP: 다운로드 전용 client. stream 수명이 300s 까지 가므로
+	// search 용 25s timeout client 와 분리(Timeout 없이 Transport 만).
+	downloadHTTP *http.Client
+
 	mu      sync.Mutex
 	hzCache sidecarHealth
 	hzAt    time.Time
@@ -83,7 +88,9 @@ func NewSidecarClient(baseURL string, healthzTTL time.Duration) *SidecarClient {
 	return &SidecarClient{
 		baseURL: baseURL,
 		http:    &http.Client{Timeout: 25 * time.Second},
-		hzTTL:   healthzTTL,
+		// 다운로드 전용: Timeout 없이 stream 전송(handler ctx 가 수명 제어).
+		downloadHTTP: &http.Client{},
+		hzTTL:        healthzTTL,
 	}
 }
 
@@ -127,6 +134,45 @@ func (c *SidecarClient) Search(ctx context.Context, req SidecarSearchRequest) (s
 		return sidecarSearchData{}, search.ErrBadGateway
 	}
 	return env.Data, nil
+}
+
+// Download: 사이드카 GET /download 호출. raw URL 은 url.Values 로 정확히 한번만 encode.
+// 응답 body 를 읽지 않고 OPEN *http.Response 를 반환. caller 가 반드시 resp.Body.Close().
+// handler 가 부여한 ctx 를 그대로 전달해 client cancellation 이 upstream stream 을 종료시킨다.
+func (c *SidecarClient) Download(ctx context.Context, platform, rawURL string) (*http.Response, error) {
+	// baseURL 은 loopback 신뢰 경계. rawURL 은 단일 encode 로 sidecar 가 원문 복원.
+	q := url.Values{}
+	q.Set("platform", platform)
+	q.Set("url", rawURL)
+	reqURL := c.baseURL + "/download?" + q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, search.ErrUnreachable
+	}
+
+	resp, err := c.downloadHTTP.Do(req)
+	if err != nil {
+		// ctx deadline/canceled 는 상위로 그대로 전달(aggregator 가 메시지 처리).
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return nil, err
+		}
+		return nil, search.ErrUnreachable
+	}
+
+	// 상태코드만 보고 매핑. body 는 읽지 않는다(원문/signed URL 누출 방지).
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		switch resp.StatusCode {
+		case http.StatusForbidden:
+			return nil, search.ErrForbidden
+		case http.StatusGatewayTimeout:
+			return nil, context.DeadlineExceeded
+		default:
+			return nil, search.ErrBadGateway
+		}
+	}
+	return resp, nil
 }
 
 // Healthz: 사이드카 /healthz 조회(TTL 캐시). 가용성 bool 만.
