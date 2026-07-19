@@ -23,3 +23,11 @@ class SearchRequest(BaseModel):
     filters: SearchFilters = Field(default_factory=SearchFilters)
 
 # VideoItem 은 dict 로 직접 구성(Go sidecarVideo 와 동일 스키마). 별도 모델 불필요.
+
+# M3: 키워드 추출/번역 요청 모델(additive).
+class ExtractRequest(BaseModel):
+    urls: list[str]                        # 참고 URL(≤3). route 가 trim/dedupe/길이 검사.
+
+class TranslateRequest(BaseModel):
+    text: str                              # 번역 원문. route 가 trim/길이(≤200) 검사.
+    source_lang: str = "ko"                # 현재 "ko" 만 지원.
