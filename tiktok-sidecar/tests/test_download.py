@@ -83,6 +83,46 @@ def test_validate_download_url_rejects_unsafe_input(platform, url, resolver):
     assert "token=secret" not in str(exc.value)
 
 
+def test_guarded_backend_rechecks_dns_at_dial_and_rejects_rebinding():
+    url = "https://v.tiktokcdn.com/video"
+    assert download.validate_download_url("tiktok", url, public_resolver) == url
+
+    backend = download.GuardedNetworkBackend(private_resolver)
+    with pytest.raises(download.DownloadBadRequest):
+        backend.connect_tcp("v.tiktokcdn.com", 443)
+
+
+def test_guarded_backend_dials_the_validated_public_ip():
+    calls = []
+
+    class FakeBackend:
+        def connect_tcp(self, host, port, **kwargs):
+            calls.append((host, port, kwargs))
+            return object()
+
+        def sleep(self, seconds):
+            pass
+
+    backend = download.GuardedNetworkBackend(public_resolver)
+    backend._backend = FakeBackend()
+    stream = backend.connect_tcp("v.tiktokcdn.com", 443, timeout=2.0)
+
+    assert stream is not None
+    assert calls[0][0:2] == ("93.184.216.34", 443)
+    assert calls[0][2]["timeout"] == 2.0
+
+
+def test_default_client_uses_guarded_network_backend():
+    client = download._new_guarded_client(public_resolver)
+    try:
+        assert isinstance(
+            client._transport._pool._network_backend,
+            download.GuardedNetworkBackend,
+        )
+    finally:
+        client.close()
+
+
 def test_open_download_streams_chunks_and_closes_once(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     response = FakeResponse(headers={"content-type": "video/webm"}, chunks=[b"one", b"two"])

@@ -15,6 +15,7 @@ from typing import Callable, Iterable
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+import httpcore
 
 
 class DownloadBadRequest(Exception):
@@ -46,13 +47,14 @@ def _host_matches(host: str, suffixes: Iterable[str]) -> bool:
     return any(host == suffix or host.endswith("." + suffix) for suffix in suffixes)
 
 
-def _resolve_public(host: str, port: int, resolver: Callable = socket.getaddrinfo) -> None:
+def _resolve_public(host: str, port: int, resolver: Callable = socket.getaddrinfo) -> str:
     try:
         answers = resolver(host, port, type=socket.SOCK_STREAM)
     except (OSError, socket.gaierror) as exc:
         raise DownloadBadRequest("download host resolution failed") from exc
     if not answers:
         raise DownloadBadRequest("download host resolution failed")
+    first_ip = ""
     for answer in answers:
         try:
             ip = ipaddress.ip_address(answer[4][0])
@@ -60,6 +62,9 @@ def _resolve_public(host: str, port: int, resolver: Callable = socket.getaddrinf
             raise DownloadBadRequest("download host resolution failed") from exc
         if not ip.is_global:
             raise DownloadBadRequest("download host is not public")
+        if not first_ip:
+            first_ip = str(ip)
+    return first_ip
 
 
 def validate_download_url(platform: str, raw_url: str, resolver: Callable = socket.getaddrinfo) -> str:
@@ -114,6 +119,50 @@ class DownloadStream:
             self.client.close()
 
 
+class GuardedNetworkBackend:
+    """dial 직전 DNS를 재검증하고 검증한 IP로 직접 연결한다."""
+
+    def __init__(self, resolver: Callable = socket.getaddrinfo) -> None:
+        self._resolver = resolver
+        self._backend = httpcore.SyncBackend()
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options=None,
+    ):
+        public_ip = _resolve_public(host, port, self._resolver)
+        return self._backend.connect_tcp(
+            public_ip,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    def connect_unix_socket(self, *args, **kwargs):
+        raise DownloadBadRequest("unix sockets are not allowed")
+
+    def sleep(self, seconds: float) -> None:
+        self._backend.sleep(seconds)
+
+
+def _new_guarded_client(resolver: Callable) -> httpx.Client:
+    # httpx 0.27/httpcore 1.0의 pool에 검증 backend를 주입한다. TLS SNI/Host는
+    # 원 hostname을 유지하고 TCP 목적지만 검증된 IP로 고정한다.
+    transport = httpx.HTTPTransport(trust_env=False)
+    transport._pool._network_backend = GuardedNetworkBackend(resolver)
+    return httpx.Client(
+        follow_redirects=False,
+        timeout=httpx.Timeout(300.0, connect=20.0),
+        trust_env=False,
+        transport=transport,
+    )
+
+
 def _request_headers(platform: str) -> dict[str, str]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/127 Safari/537.36",
@@ -143,11 +192,14 @@ def open_download(
 
     current = validate_download_url(platform, raw_url, resolver)
     try:
-        client = client_factory(
-            follow_redirects=False,
-            timeout=httpx.Timeout(300.0, connect=20.0),
-            trust_env=False,
-        )
+        if client_factory is httpx.Client:
+            client = _new_guarded_client(resolver)
+        else:
+            client = client_factory(
+                follow_redirects=False,
+                timeout=httpx.Timeout(300.0, connect=20.0),
+                trust_env=False,
+            )
     except Exception as exc:
         raise DownloadUpstreamFailed("download upstream unavailable") from exc
 
