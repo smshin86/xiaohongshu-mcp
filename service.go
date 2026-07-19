@@ -13,6 +13,7 @@ import (
 	"github.com/xpzouying/xiaohongshu-mcp/browser"
 	"github.com/xpzouying/xiaohongshu-mcp/configs"
 	"github.com/xpzouying/xiaohongshu-mcp/cookies"
+	"github.com/xpzouying/xiaohongshu-mcp/localstorage"
 	"github.com/xpzouying/xiaohongshu-mcp/pkg/downloader"
 	"github.com/xpzouying/xiaohongshu-mcp/pkg/xhsutil"
 	"github.com/xpzouying/xiaohongshu-mcp/xiaohongshu"
@@ -93,11 +94,15 @@ type UserProfileResponse struct {
 	Feeds         []xiaohongshu.Feed             `json:"feeds"`
 }
 
-// DeleteCookies 删除 cookies 文件，用于登录重置
+// DeleteCookies 删除 cookies 与 localStorage 文件，用于登录完全重置
 func (s *XiaohongshuService) DeleteCookies(ctx context.Context) error {
 	cookiePath := cookies.GetCookiesFilePath()
 	cookieLoader := cookies.NewLoadCookie(cookiePath)
-	return cookieLoader.DeleteCookies()
+	if err := cookieLoader.DeleteCookies(); err != nil {
+		return err
+	}
+	// localStorage 도 함께 삭제(세션 완전 초기화).
+	return localstorage.NewFileStorer(localstorage.GetFilePath()).Delete()
 }
 
 // CheckLoginStatus 检查登录状态
@@ -114,6 +119,11 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 
 	page := b.NewPage()
 	defer page.Close()
+
+	// 페이지 최초 네비게이션 전 localStorage 복원(세션 재사용). 실패는 graceful 스킵.
+	if err := restoreXhsLocalStorage(page); err != nil {
+		logrus.Warnf("failed to restore local storage: %v", err)
+	}
 
 	loginAction := xiaohongshu.NewLogin(page)
 
@@ -176,6 +186,10 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeRe
 			if loginAction.WaitForLogin(ctxTimeout) {
 				if er := saveCookies(page); er != nil {
 					logrus.Errorf("failed to save cookies: %v", er)
+				}
+				// 쿠키와 함께 XHS localStorage 도 영속화(세션 복원용).
+				if er := saveXhsLocalStorage(page); er != nil {
+					logrus.Warnf("failed to save local storage: %v", er)
 				}
 			}
 		}()
@@ -397,6 +411,11 @@ func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, fi
 
 	page := b.NewPage()
 	defer page.Close()
+
+	// 페이지 최초 네비게이션 전 localStorage 복원(검색 세션 재사용). 실패는 graceful 스킵.
+	if err := restoreXhsLocalStorage(page); err != nil {
+		logrus.Warnf("failed to restore local storage: %v", err)
+	}
 
 	action := xiaohongshu.NewSearchAction(page)
 
