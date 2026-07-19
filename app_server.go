@@ -16,11 +16,15 @@ import (
 
 // AppServer 应用服务器结构体，封装所有服务和处理器
 type AppServer struct {
-	xiaohongshuService *XiaohongshuService
-	aggregator         *search.AggregatorService
-	mcpServer          *mcp.Server
-	router             *gin.Engine
-	httpServer         *http.Server
+	xiaohongshuService  *XiaohongshuService
+	xhsDownloadResolver xhsDownloadResolver
+	xhsDownloadOpener   xhsDownloadOpener
+	sidecarDownloader   sidecarDownloader
+	downloadGuard       *downloadURLGuard
+	aggregator          *search.AggregatorService
+	mcpServer           *mcp.Server
+	router              *gin.Engine
+	httpServer          *http.Server
 }
 
 // NewAppServer 创建新的应用服务器实例
@@ -38,6 +42,13 @@ func NewAppServer(xiaohongshuService *XiaohongshuService) *AppServer {
 		sidecarURL = v
 	}
 	sidecar := NewSidecarClient(sidecarURL, 0)
+	downloadGuard := newDownloadURLGuard()
+	appServer.xhsDownloadResolver = xiaohongshuService
+	appServer.xhsDownloadOpener = &guardedXHSDownloadOpener{
+		client: downloadGuard.NewClient("xiaohongshu"),
+	}
+	appServer.sidecarDownloader = sidecar
+	appServer.downloadGuard = downloadGuard
 	appServer.aggregator = search.NewAggregatorService(map[string]search.VideoAdapter{
 		"xiaohongshu": NewXhsAdapter(xiaohongshuService),
 		"douyin":      NewDouyinAdapter(sidecar),
