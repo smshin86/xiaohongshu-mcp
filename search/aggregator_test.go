@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -132,4 +133,45 @@ func TestSideErrorMessageMapping(t *testing.T) {
 	msg := SideErrorMessage("douyin", errors.New("random raw with cookie=secret"))
 	require.Equal(t, "검색 중 오류가 발생했습니다", msg)
 	require.NotContains(t, msg, "secret")
+}
+
+// blockingAdapter: Available 이 ctx 가 끊길 때까지 block(실제 브라우저 probe hang 시뮬레이션).
+// Availability 의 fan-out + per-adapter timeout 격리를 검증한다.
+type blockingAdapter struct {
+	name  string
+	avail Availability
+}
+
+func (b *blockingAdapter) Name() string { return b.name }
+func (b *blockingAdapter) Available(ctx context.Context) Availability {
+	select {
+	case <-ctx.Done():
+		return Availability{Available: false, Reason: "probe timeout"}
+	case <-time.After(30 * time.Second):
+		return b.avail
+	}
+}
+func (b *blockingAdapter) Search(ctx context.Context, q SearchQuery) (AdapterSearchPage, error) {
+	return AdapterSearchPage{}, nil
+}
+
+func TestAggregatorAvailabilityIsolatesSlowProbe(t *testing.T) {
+	// 회귀: Availability 가 순차+무타임아웃이면 XHS probe hang 이 전체를 블록한다.
+	// fan-out + per-adapter timeout 적용 후엔 (1) 즉시 반환, (2) XHS unavailable, (3) douyin 계산 유지.
+	prev := perAdapterTimeout["xiaohongshu"]
+	perAdapterTimeout["xiaohongshu"] = 50 * time.Millisecond
+	defer func() { perAdapterTimeout["xiaohongshu"] = prev }()
+
+	svc := NewAggregatorService(map[string]VideoAdapter{
+		"xiaohongshu": &blockingAdapter{name: "xiaohongshu", avail: Availability{Available: true}},
+		"douyin":      &fakeAdapter{name: "douyin", avail: Availability{Available: true}},
+	})
+
+	start := time.Now()
+	out := svc.Availability(context.Background())
+	elapsed := time.Since(start)
+
+	require.Less(t, elapsed, 2*time.Second, "Availability 가 XHS probe hang 에 블록되면 안 됨(순차/무타임아웃 결함 회귀)")
+	require.False(t, out["xiaohongshu"].Available, "타임아웃 난 XHS probe 는 unavailable")
+	require.True(t, out["douyin"].Available, "지연 사이드와 무관하게 douyin 가용성이 계산되어야 함")
 }

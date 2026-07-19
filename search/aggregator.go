@@ -31,11 +31,30 @@ func NewAggregatorService(adapters map[string]VideoAdapter) *AggregatorService {
 }
 
 // Availability 는 각 어댑터의 현재 가용성을 반환(capability endpoint 용).
+// 한 사이드의 느린/중단된 probe(예: XHS 브라우저 탐색)가 전체 capabilities 응답을
+// 블록하지 않도록 runSide 와 동일하게 fan-out + per-adapter timeout 으로 격리한다
+// (수용 기준 6 부분실패 격리가 Search 에만 있고 Availability 누락이었음).
 func (s *AggregatorService) Availability(ctx context.Context) map[string]Availability {
 	out := make(map[string]Availability, len(s.adapters))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	for name, ad := range s.adapters {
-		out[name] = ad.Available(ctx)
+		wg.Add(1)
+		go func(pname string, pad VideoAdapter) {
+			defer wg.Done()
+			timeout := perAdapterTimeout[pname]
+			if timeout == 0 {
+				timeout = 45 * time.Second
+			}
+			sctx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			a := pad.Available(sctx)
+			mu.Lock()
+			out[pname] = a
+			mu.Unlock()
+		}(name, ad)
 	}
+	wg.Wait()
 	return out
 }
 
