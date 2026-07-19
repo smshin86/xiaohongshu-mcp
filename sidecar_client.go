@@ -74,6 +74,10 @@ type SidecarClient struct {
 	// search 용 25s timeout client 와 분리(Timeout 없이 Transport 만).
 	downloadHTTP *http.Client
 
+	// keywordsHTTP: 키워드 extract/translate 전용. LLM 왕복으로 60s 까지 가므로
+	// search 25s·download Timeout 없음 과 분리.
+	keywordsHTTP *http.Client
+
 	mu      sync.Mutex
 	hzCache sidecarHealth
 	hzAt    time.Time
@@ -90,6 +94,8 @@ func NewSidecarClient(baseURL string, healthzTTL time.Duration) *SidecarClient {
 		http:    &http.Client{Timeout: 25 * time.Second},
 		// 다운로드 전용: Timeout 없이 stream 전송(handler ctx 가 수명 제어).
 		downloadHTTP: &http.Client{},
+		// 키워드 전용: LLM 왕복 60s. handler ctx 도 60s 로 일치.
+		keywordsHTTP: &http.Client{Timeout: 60 * time.Second},
 		hzTTL:        healthzTTL,
 	}
 }
@@ -207,4 +213,119 @@ func (c *SidecarClient) Healthz(ctx context.Context) (sidecarHealth, error) {
 	c.hzAt = time.Now()
 	c.mu.Unlock()
 	return hz, nil
+}
+
+// SidecarKeywordCandidate: 사이드카 /keywords/extract 가 뽑은 단일 후보.
+type SidecarKeywordCandidate struct {
+	Keyword    string  `json:"keyword"`
+	SourceURL  string  `json:"source_url"`
+	Basis      string  `json:"basis"`
+	Confidence float64 `json:"confidence"`
+}
+
+// SidecarKeywordResult: extract 응답 data(candidates + note).
+type SidecarKeywordResult struct {
+	Candidates []SidecarKeywordCandidate `json:"candidates"`
+	Note       string                    `json:"note"`
+}
+
+// SidecarTranslateCandidate: 사이드카 /keywords/translate 가 번역한 단일 후보.
+type SidecarTranslateCandidate struct {
+	ZH string `json:"zh"`
+}
+
+// SidecarTranslateResult: translate 응답 data.
+type SidecarTranslateResult struct {
+	Candidates []SidecarTranslateCandidate `json:"candidates"`
+}
+
+// sidecarKeywordEnvelope: {success,data:{candidates,note}} 래핑.
+type sidecarKeywordEnvelope struct {
+	Success bool                 `json:"success"`
+	Data    SidecarKeywordResult `json:"data"`
+}
+
+// sidecarTranslateEnvelope: {success,data:{candidates}} 래핑.
+type sidecarTranslateEnvelope struct {
+	Success bool                   `json:"success"`
+	Data    SidecarTranslateResult `json:"data"`
+}
+
+// ExtractKeywords: POST /keywords/extract 호출. caller ctx 로 cancel propagation.
+// 200+success:true→data; 200+success:false→ErrKeywordsFailed; ≥400→ErrBadGateway;
+// 네트워크→ErrUnreachable; ctx deadline/canceled→그대로 상위.
+func (c *SidecarClient) ExtractKeywords(ctx context.Context, urls []string) (SidecarKeywordResult, error) {
+	body, err := json.Marshal(struct {
+		URLs []string `json:"urls"`
+	}{URLs: urls})
+	if err != nil {
+		return SidecarKeywordResult{}, fmt.Errorf("%w: %v", search.ErrBadGateway, err)
+	}
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/keywords/extract", bytes.NewReader(body))
+	if err != nil {
+		return SidecarKeywordResult{}, search.ErrUnreachable
+	}
+	hr.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.keywordsHTTP.Do(hr)
+	if err != nil {
+		// ctx deadline/canceled 는 원문 그대로(handler 가 504/빈응답 매핑).
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return SidecarKeywordResult{}, err
+		}
+		return SidecarKeywordResult{}, search.ErrUnreachable
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return SidecarKeywordResult{}, search.ErrBadGateway
+	}
+
+	var env sidecarKeywordEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return SidecarKeywordResult{}, search.ErrBadGateway
+	}
+	if !env.Success {
+		return SidecarKeywordResult{}, search.ErrKeywordsFailed
+	}
+	return env.Data, nil
+}
+
+// TranslateKeywords: POST /keywords/translate 호출. caller ctx 로 cancel propagation.
+// 매핑은 ExtractKeywords 와 동일.
+func (c *SidecarClient) TranslateKeywords(ctx context.Context, text, sourceLang string) (SidecarTranslateResult, error) {
+	body, err := json.Marshal(struct {
+		Text       string `json:"text"`
+		SourceLang string `json:"source_lang"`
+	}{Text: text, SourceLang: sourceLang})
+	if err != nil {
+		return SidecarTranslateResult{}, fmt.Errorf("%w: %v", search.ErrBadGateway, err)
+	}
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/keywords/translate", bytes.NewReader(body))
+	if err != nil {
+		return SidecarTranslateResult{}, search.ErrUnreachable
+	}
+	hr.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.keywordsHTTP.Do(hr)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return SidecarTranslateResult{}, err
+		}
+		return SidecarTranslateResult{}, search.ErrUnreachable
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return SidecarTranslateResult{}, search.ErrBadGateway
+	}
+
+	var env sidecarTranslateEnvelope
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return SidecarTranslateResult{}, search.ErrBadGateway
+	}
+	if !env.Success {
+		return SidecarTranslateResult{}, search.ErrKeywordsFailed
+	}
+	return env.Data, nil
 }

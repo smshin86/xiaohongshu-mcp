@@ -7,10 +7,11 @@ import (
 
 // Sentinel 에러: 사이드카/어댑터 실패 유형. 원문 err.Error() 대신 이 들로 분기해 고정 메시지 매핑.
 var (
-	ErrUnavailable = errors.New("platform unavailable")   // 쿠키/ms_token 미설정·만료(503)
-	ErrBadGateway  = errors.New("platform search failed") // 검색/서명/antibot 실패(502)
-	ErrUnreachable = errors.New("platform unreachable")   // 연결 실패/네트워크
-	ErrForbidden   = errors.New("platform forbidden")     // 다운로드 403/antibot 차단
+	ErrUnavailable    = errors.New("platform unavailable")      // 쿠키/ms_token 미설정·만료(503)
+	ErrBadGateway     = errors.New("platform search failed")    // 검색/서명/antibot 실패(502)
+	ErrUnreachable    = errors.New("platform unreachable")      // 연결 실패/네트워크
+	ErrForbidden      = errors.New("platform forbidden")        // 다운로드 403/antibot 차단
+	ErrKeywordsFailed = errors.New("keyword extraction failed") // 사이드카 키워드 처리 거부(success:false) — 프론트 직접 입력 복구
 )
 
 // SideErrorMessage 는 err 를 플랫폼별 고정 안전 한국어 메시지로 변환.

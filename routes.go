@@ -64,6 +64,8 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 		api.POST("/search", appServer.unifiedSearchHandler)
 		api.GET("/search/capabilities", appServer.searchCapabilitiesHandler)
 		api.GET("/download", appServer.downloadHandler)
+		api.POST("/keywords/extract", appServer.extractKeywordsHandler)
+		api.POST("/keywords/translate", appServer.translateKeywordsHandler)
 	}
 
 	// 한국어 검색 페이지 정적 서빙 (같은 출처)

@@ -20,6 +20,7 @@ type AppServer struct {
 	xhsDownloadResolver xhsDownloadResolver
 	xhsDownloadOpener   xhsDownloadOpener
 	sidecarDownloader   sidecarDownloader
+	sidecarKeywords     sidecarKeywords
 	downloadGuard       *downloadURLGuard
 	aggregator          *search.AggregatorService
 	mcpServer           *mcp.Server
@@ -48,6 +49,7 @@ func NewAppServer(xiaohongshuService *XiaohongshuService) *AppServer {
 		client: downloadGuard.NewClient("xiaohongshu"),
 	}
 	appServer.sidecarDownloader = sidecar
+	appServer.sidecarKeywords = sidecar
 	appServer.downloadGuard = downloadGuard
 	appServer.aggregator = search.NewAggregatorService(map[string]search.VideoAdapter{
 		"xiaohongshu": NewXhsAdapter(xiaohongshuService),
