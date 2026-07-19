@@ -119,6 +119,9 @@ body {
   cursor: pointer;
 }
 #qrcode-img { display: block; margin: 16px auto; max-width: 240px; }
+/* [hidden] 가드: id 선택자(display:block)가 UA [hidden]을 이겨서 QR 버튼 누르기 전에
+   깨진 이미지로 노출되던 결함 방어. JS 는 .hidden 속성 토글로 표시/숨김. */
+#qrcode-img[hidden] { display: none; }
 #login-status { color: var(--muted); }
 
 .modal {

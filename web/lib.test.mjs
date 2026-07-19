@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import {
   initialState, togglePlatform, toggleAllPlatforms, platformsFromState,
   pendingPlatforms, visibleItems, selectLoadMorePlatforms,
@@ -95,4 +96,16 @@ test("parseFilters defaults per_platform_limit and fixes video_only true for M1"
   const f = parseFilters({});
   assert.equal(f.per_platform_limit, 15);
   assert.equal(f.video_only, true);
+});
+
+test("style.css hides #qrcode-img when [hidden] (regression: broken QR icon before click)", () => {
+  // 브라우저 smoke 결함: #qrcode-img { display:block }(id 선택자)가 UA [hidden]을 이겨서
+  // QR 버튼 누르기 전 hidden 상태의 img 가 깨진 이미지로 노출됨. JS 토글(.hidden=true/false)은
+  // 정상이므로 [hidden] 가드가 display:none 을 보장해야 함. 가드 삭제 시 회귀.
+  const css = fs.readFileSync(new URL("./style.css", import.meta.url), "utf8");
+  assert.match(
+    css,
+    /#qrcode-img\[hidden\]\s*\{[^}]*display:\s*none/i,
+    "#qrcode-img[hidden] { display:none } 가드가 style.css 에 있어야 함"
+  );
 });
