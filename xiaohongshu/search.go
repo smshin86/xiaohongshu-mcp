@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/xpzouying/xiaohongshu-mcp/errors"
 )
 
@@ -155,6 +156,26 @@ func validateInternalFilterOption(filter internalFilterOption) error {
 	return nil
 }
 
+// computeFilterActions 把 FilterOption 列表归约为实际的筛选动作。
+// 零值 FilterOption(GET 关键词搜索会传入)返回空切片——用于 fast-path:
+// 没有实际筛选值时不进入筛选 hover 流程,避免不必要的交互与超时。
+func computeFilterActions(filters ...FilterOption) ([]internalFilterOption, error) {
+	var actions []internalFilterOption
+	for _, filter := range filters {
+		internal, err := convertToInternalFilters(filter)
+		if err != nil {
+			return nil, fmt.Errorf("筛选选项转换失败: %w", err)
+		}
+		for _, f := range internal {
+			if err := validateInternalFilterOption(f); err != nil {
+				return nil, fmt.Errorf("筛选选项验证失败: %w", err)
+			}
+			actions = append(actions, f)
+		}
+	}
+	return actions, nil
+}
+
 type SearchAction struct {
 	page *rod.Page
 }
@@ -168,53 +189,73 @@ func NewSearchAction(page *rod.Page) *SearchAction {
 func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...FilterOption) ([]Feed, error) {
 	page := s.page.Context(ctx)
 
-	searchURL := makeSearchURL(keyword)
-	page.MustNavigate(searchURL)
-	page.MustWaitStable()
-
-	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
-
-	// 如果有筛选条件，则应用筛选
-	if len(filters) > 0 {
-		// 将所有 FilterOption 转换为内部筛选选项
-		var allInternalFilters []internalFilterOption
-		for _, filter := range filters {
-			internalFilters, err := convertToInternalFilters(filter)
-			if err != nil {
-				return nil, fmt.Errorf("筛选选项转换失败: %w", err)
-			}
-			allInternalFilters = append(allInternalFilters, internalFilters...)
-		}
-
-		// 验证所有内部筛选选项
-		for _, filter := range allInternalFilters {
-			if err := validateInternalFilterOption(filter); err != nil {
-				return nil, fmt.Errorf("筛选选项验证失败: %w", err)
-			}
-		}
-
-		// 悬停在筛选按钮上
-		filterButton := page.MustElement(`div.filter`)
-		filterButton.MustHover()
-
-		// 等待筛选面板出现
-		page.MustWait(`() => document.querySelector('div.filter-panel') !== null`)
-
-		// 应用所有筛选条件
-		for _, filter := range allInternalFilters {
-			selector := fmt.Sprintf(`div.filter-panel div.filters:nth-child(%d) div.tags:nth-child(%d)`,
-				filter.FiltersIndex, filter.TagsIndex)
-			option := page.MustElement(selector)
-			option.MustClick()
-		}
-
-		// 等待页面更新
-		page.MustWaitStable()
-		// 重新等待 __INITIAL_STATE__ 更新
-		page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
+	// fast-path: 没有实际筛选值时跳过筛选 hover,直接取搜索结果。
+	// GET 关键词搜索会传入零值 FilterOption,旧代码因 len(filters)>0 误入 hover,
+	// 在登录态异常或筛选面板缺失时 Must* 超时 panic。此处先归约真实动作。
+	actions, err := computeFilterActions(filters...)
+	if err != nil {
+		return nil, err
 	}
 
-	result := page.MustEval(`() => {
+	searchURL := makeSearchURL(keyword)
+	if err := page.Navigate(searchURL); err != nil {
+		return nil, fmt.Errorf("navigate search page failed: %w", err)
+	}
+	if err := page.WaitLoad(); err != nil {
+		return nil, fmt.Errorf("wait search load failed: %w", err)
+	}
+	if err := page.WaitStable(time.Second); err != nil {
+		return nil, fmt.Errorf("wait search stable failed: %w", err)
+	}
+	if err := page.Wait(rod.Eval(`() => window.__INITIAL_STATE__ !== undefined`)); err != nil {
+		return nil, fmt.Errorf("wait initial state failed: %w", err)
+	}
+
+	// 仅有实际筛选动作时才进入筛选流程
+	if len(actions) > 0 {
+		// 悬停在筛选按钮上
+		filterButton, err := page.Element(`div.filter`)
+		if err != nil {
+			return nil, fmt.Errorf("find filter button failed: %w", err)
+		}
+		if filterButton == nil {
+			return nil, fmt.Errorf("filter button not found")
+		}
+		if err := filterButton.Hover(); err != nil {
+			return nil, fmt.Errorf("hover filter button failed: %w", err)
+		}
+
+		// 等待筛选面板出现
+		if err := page.Wait(rod.Eval(`() => document.querySelector('div.filter-panel') !== null`)); err != nil {
+			return nil, fmt.Errorf("wait filter panel failed: %w", err)
+		}
+
+		// 应用所有筛选条件
+		for _, filter := range actions {
+			selector := fmt.Sprintf(`div.filter-panel div.filters:nth-child(%d) div.tags:nth-child(%d)`,
+				filter.FiltersIndex, filter.TagsIndex)
+			option, err := page.Element(selector)
+			if err != nil {
+				return nil, fmt.Errorf("find filter option failed: %w", err)
+			}
+			if option == nil {
+				return nil, fmt.Errorf("filter option not found: %s", selector)
+			}
+			if err := option.Click(proto.InputMouseButtonLeft, 1); err != nil {
+				return nil, fmt.Errorf("click filter option failed: %w", err)
+			}
+		}
+
+		// 等待页面更新后重新读取 __INITIAL_STATE__
+		if err := page.WaitStable(time.Second); err != nil {
+			return nil, fmt.Errorf("wait filter stable failed: %w", err)
+		}
+		if err := page.Wait(rod.Eval(`() => window.__INITIAL_STATE__ !== undefined`)); err != nil {
+			return nil, fmt.Errorf("wait state after filter failed: %w", err)
+		}
+	}
+
+	res, err := page.Eval(`() => {
 		if (window.__INITIAL_STATE__ &&
 		    window.__INITIAL_STATE__.search &&
 		    window.__INITIAL_STATE__.search.feeds) {
@@ -225,7 +266,11 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 			}
 		}
 		return "";
-	}`).String()
+	}`)
+	if err != nil {
+		return nil, fmt.Errorf("eval feeds failed: %w", err)
+	}
+	result := res.Value.String()
 
 	if result == "" {
 		return nil, errors.ErrNoFeeds

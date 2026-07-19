@@ -67,6 +67,35 @@ func TestSearchWithFilters(t *testing.T) {
 	}
 }
 
+// TestComputeFilterActions 验证 fast-path 判定逻辑:
+// 关键词搜索(GET)会传入零值 FilterOption, 此时不应进入筛选 hover 流程。
+func TestComputeFilterActions(t *testing.T) {
+	// 零值 FilterOption(无任何筛选值) -> 空动作 -> 跳过 hover
+	actions, err := computeFilterActions(FilterOption{})
+	require.NoError(t, err)
+	require.Empty(t, actions, "零值 FilterOption 不应产生筛选动作")
+
+	// 单个有效筛选 -> 一个动作
+	actions, err = computeFilterActions(FilterOption{NoteType: "视频"})
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+	require.Equal(t, "视频", actions[0].Text)
+
+	// 多个有效筛选 -> 多个动作(顺序保留)
+	actions, err = computeFilterActions(FilterOption{
+		SortBy:   "最新",
+		NoteType: "图文",
+	})
+	require.NoError(t, err)
+	require.Len(t, actions, 2)
+	require.Equal(t, "最新", actions[0].Text)
+	require.Equal(t, "图文", actions[1].Text)
+
+	// 无效筛选值 -> 错误(不应静默跳过)
+	_, err = computeFilterActions(FilterOption{NoteType: "不存在的类型"})
+	require.Error(t, err)
+}
+
 func TestFilterValidation(t *testing.T) {
 	// 测试有效的筛选选项转换
 	validFilter := FilterOption{
