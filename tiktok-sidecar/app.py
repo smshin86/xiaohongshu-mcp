@@ -1,6 +1,14 @@
 import os
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.background import BackgroundTask
+from download import (
+    DownloadBadRequest,
+    DownloadForbidden,
+    DownloadTimedOut,
+    DownloadUpstreamFailed,
+    open_download,
+)
 from models import SearchRequest
 
 app = FastAPI(title="video-search-sidecar")
@@ -48,6 +56,27 @@ def search(payload: SearchRequest):
             return _fail(502)
     return _fail(400)
 
+@app.get("/download")
+def download_video(platform: str, url: str):
+    try:
+        stream = open_download(platform, url)
+    except DownloadBadRequest:
+        return _fail(400)
+    except DownloadForbidden:
+        return _fail(403)
+    except DownloadTimedOut:
+        return _fail(504)
+    except DownloadUpstreamFailed:
+        return _fail(502)
+
+    headers = {"Content-Disposition": f'attachment; filename="{platform}-video.mp4"'}
+    return StreamingResponse(
+        stream.iter_bytes(),
+        media_type=stream.content_type,
+        headers=headers,
+        background=BackgroundTask(stream.close),
+    )
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=18061)
+    uvicorn.run(app, host="127.0.0.1", port=18061, access_log=False)
