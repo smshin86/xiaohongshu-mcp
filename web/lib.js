@@ -112,3 +112,35 @@ export function parseFilters(values) {
   f.per_platform_limit = ppl > 0 ? ppl : 15;
   return f;
 }
+
+// canDownload: 다운로드에 필요한 식별자가 모두 있는지. XHS 는 detail_token,
+// Douyin/TikTok 은 video_url 이 추가로 필요하다. 없으면 버튼 disabled.
+export function canDownload(item) {
+  if (!item || !item.post_id) return false;
+  if (item.platform === "xiaohongshu") return Boolean(item.detail_token);
+  if (item.platform === "douyin" || item.platform === "tiktok") return Boolean(item.video_url);
+  return false;
+}
+
+// buildDownloadURL: same-origin /api/v1/download anchor 용 query 문자열.
+// XHS 는 platform/post_id/detail_token(원문 video_url 미포함 — 서명 노출 방지),
+// Douyin/TikTok 은 platform/post_id/url=video_url 을 URLSearchParams 로 encode 한다.
+// 식별자가 부족하면 빈 문자열을 반환한다. filename 은 선택.
+export function buildDownloadURL(item, filename = "") {
+  if (!canDownload(item)) return "";
+  const params = new URLSearchParams();
+  params.set("platform", item.platform);
+  params.set("post_id", item.post_id);
+  if (item.platform === "xiaohongshu") {
+    params.set("detail_token", item.detail_token);
+  } else {
+    params.set("url", item.video_url);
+  }
+  if (filename) params.set("filename", filename);
+  return "/api/v1/download?" + params.toString();
+}
+
+// hasXHSManualFallback: XHS 이고 post_url 이 있을 때만 Yinziai 수동 fallback 을 노출.
+export function hasXHSManualFallback(item) {
+  return Boolean(item) && item.platform === "xiaohongshu" && Boolean(item.post_url);
+}

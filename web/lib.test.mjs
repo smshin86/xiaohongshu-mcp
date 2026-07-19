@@ -5,6 +5,7 @@ import {
   initialState, togglePlatform, toggleAllPlatforms, platformsFromState,
   pendingPlatforms, visibleItems, selectLoadMorePlatforms,
   resetForNewSearch, ingestItems, dedupeKey, parseFilters,
+  buildDownloadURL, canDownload, hasXHSManualFallback,
 } from "./lib.js";
 
 test("initial platforms are XHS + Douyin and individual toggle keeps one", () => {
@@ -108,4 +109,69 @@ test("style.css hides #qrcode-img when [hidden] (regression: broken QR icon befo
     /#qrcode-img\[hidden\]\s*\{[^}]*display:\s*none/i,
     "#qrcode-img[hidden] { display:none } 가드가 style.css 에 있어야 함"
   );
+});
+
+test("buildDownloadURL: XHS carries post_id/detail_token and excludes raw video_url", () => {
+  const url = buildDownloadURL({
+    platform: "xiaohongshu",
+    post_id: "abc",
+    detail_token: "tok123",
+    // 원문 video_url 은 서명이 포함될 수 있으므로 절대 URL 에 넣지 않는다.
+    video_url: "https://sns-img-bd.xhscdn.com/secret.mp4?sig=hush",
+  });
+  assert.ok(url.startsWith("/api/v1/download?"), url);
+  const p = new URL(url, "http://x").searchParams;
+  assert.equal(p.get("platform"), "xiaohongshu");
+  assert.equal(p.get("post_id"), "abc");
+  assert.equal(p.get("detail_token"), "tok123");
+  assert.equal(p.get("video_url"), null, "XHS download URL must NOT carry raw video_url");
+});
+
+test("buildDownloadURL: optional filename appended (default absent)", () => {
+  const withName = buildDownloadURL(
+    { platform: "xiaohongshu", post_id: "x", detail_token: "t" },
+    "내 클립.mp4"
+  );
+  const p1 = new URL(withName, "http://x").searchParams;
+  assert.equal(p1.get("filename"), "내 클립.mp4");
+  const withoutName = buildDownloadURL({ platform: "xiaohongshu", post_id: "x", detail_token: "t" });
+  const p2 = new URL(withoutName, "http://x").searchParams;
+  assert.equal(p2.has("filename"), false, "filename 생략 시 파라미터 없음");
+});
+
+test("buildDownloadURL: Douyin/TikTok encodes special chars and signed query round-trip", () => {
+  const raw = "https://v.douyinvod.com/x.m4v?X-Bogus=abc def&sign=p&q=한국";
+  const url = buildDownloadURL({ platform: "douyin", post_id: "d1", video_url: raw });
+  const p = new URL(url, "http://x").searchParams;
+  assert.ok(url.startsWith("/api/v1/download?"));
+  assert.equal(p.get("platform"), "douyin");
+  assert.equal(p.get("post_id"), "d1");
+  assert.equal(p.get("url"), raw, "video_url 이 URLSearchParams 로 정확히 복원되어야 함");
+  assert.equal(p.get("video_url"), null, "Douyin/TikTok 은 url= 만 사용(video_url= 아님)");
+});
+
+test("canDownload: XHS needs detail_token, Douyin/TikTok need video_url", () => {
+  assert.equal(canDownload({ platform: "xiaohongshu", post_id: "x" }), false);
+  assert.equal(canDownload({ platform: "xiaohongshu", post_id: "x", detail_token: "t" }), true);
+  assert.equal(canDownload({ platform: "douyin", post_id: "d" }), false);
+  assert.equal(canDownload({ platform: "douyin", post_id: "d", video_url: "https://v.douyinvod.com/x" }), true);
+  assert.equal(canDownload({ platform: "tiktok", post_id: "t", video_url: "https://v16.tiktokcdn.com/x" }), true);
+  assert.equal(canDownload({ platform: "tiktok" }), false);
+  assert.equal(canDownload({ platform: "myspace", post_id: "m", video_url: "u" }), false);
+});
+
+test("buildDownloadURL: empty string when required identifiers missing", () => {
+  assert.equal(buildDownloadURL({ platform: "xiaohongshu", post_id: "x" }), "", "XHS detail_token 누락");
+  assert.equal(buildDownloadURL({ platform: "xiaohongshu", detail_token: "t" }), "", "XHS post_id 누락");
+  assert.equal(buildDownloadURL({ platform: "douyin", post_id: "d" }), "", "Douyin video_url 누락");
+  assert.equal(buildDownloadURL({ platform: "douyin", video_url: "u" }), "", "Douyin post_id 누락");
+  assert.equal(buildDownloadURL({ platform: "myspace", post_id: "m", video_url: "u" }), "", "지원 않는 platform");
+});
+
+test("hasXHSManualFallback: true only for XHS with post_url", () => {
+  assert.equal(hasXHSManualFallback({ platform: "xiaohongshu", post_url: "https://xhslink.com/a" }), true);
+  assert.equal(hasXHSManualFallback({ platform: "xiaohongshu" }), false, "post_url 필요");
+  assert.equal(hasXHSManualFallback({ platform: "xiaohongshu", post_url: "" }), false);
+  assert.equal(hasXHSManualFallback({ platform: "douyin", post_url: "https://www.douyin.com/v/1" }), false, "XHS 전용");
+  assert.equal(hasXHSManualFallback({ platform: "tiktok", post_url: "https://www.tiktok.com/x" }), false);
 });

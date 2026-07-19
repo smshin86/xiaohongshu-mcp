@@ -22,6 +22,7 @@ func TestStaticRoutes(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		require.Contains(t, rr.Header().Get("Content-Type"), "text/html")
 		require.Contains(t, rr.Body.String(), "<!doctype html>")
+		require.Contains(t, rr.Body.String(), "권한이 있는 콘텐츠의 개인 참고용")
 	})
 
 	t.Run("/static/app.js 제공", func(t *testing.T) {
@@ -30,6 +31,18 @@ func TestStaticRoutes(t *testing.T) {
 		router.ServeHTTP(rr, req)
 
 		require.Equal(t, http.StatusOK, rr.Code)
+		require.Contains(t, rr.Body.String(), "data-card-action")
+		require.Contains(t, rr.Body.String(), "XHS 링크 복사 + 수동 도구")
+	})
+
+	t.Run("/static/style.css 제공", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/static/style.css", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.Contains(t, rr.Body.String(), ".card-actions")
+		require.Contains(t, rr.Body.String(), "flex-wrap")
 	})
 
 	t.Run("/settings 가 settings.html 제공", func(t *testing.T) {

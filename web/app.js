@@ -3,7 +3,10 @@ import {
   PLATFORMS, initialState, togglePlatform, toggleAllPlatforms, platformsFromState,
   pendingPlatforms, visibleItems, selectLoadMorePlatforms,
   resetForNewSearch, ingestItems, parseFilters,
+  buildDownloadURL, canDownload, hasXHSManualFallback,
 } from "./lib.js";
+
+const YINZIAI_XHS_TOOL = "https://www.yinziai.com/ko/tools/download-video-xhslink";
 
 // ====== DOM 헬퍼 ======
 const $ = (id) => document.getElementById(id); // bare id ('#' 없음)
@@ -126,6 +129,16 @@ function cardHTML(it, idx) {
     ? `<img class="card-cover" src="${escapeHtml(it.thumbnail_url)}" alt="" loading="lazy">`
     : `<div class="card-cover"></div>`;
   const badge = it.platform === "xiaohongshu" ? "XHS" : it.platform === "douyin" ? "Douyin" : "TikTok";
+  const downloadURL = buildDownloadURL(it);
+  const downloadAction = canDownload(it)
+    ? `<a class="card-action" data-card-action="download" href="${escapeHtml(downloadURL)}" target="_blank" rel="noopener noreferrer" download>다운로드</a>`
+    : `<span class="card-action is-disabled" data-card-action="download" aria-disabled="true">다운로드 불가</span>`;
+  const originalAction = it.post_url
+    ? `<a class="card-action" data-card-action="original" href="${escapeHtml(it.post_url)}" target="_blank" rel="noopener noreferrer">원본 보기</a>`
+    : "";
+  const manualAction = hasXHSManualFallback(it)
+    ? `<button class="card-action" data-card-action="xhs-manual" type="button">XHS 링크 복사 + 수동 도구</button>`
+    : "";
   return `
     <article class="card" data-idx="${idx}">
       <div style="position:relative">
@@ -135,6 +148,7 @@ function cardHTML(it, idx) {
       <div class="card-body">
         <p class="card-title">${escapeHtml(it.title)}</p>
         <div class="card-meta"><span>${escapeHtml(it.author)}</span><span>${meta}</span></div>
+        <div class="card-actions">${downloadAction}${originalAction}${manualAction}</div>
       </div>
     </article>`;
 }
@@ -268,6 +282,20 @@ async function copyVideoUrl() {
   }
 }
 
+function openXHSManualFallback(it) {
+  if (!hasXHSManualFallback(it)) return;
+  // 팝업 차단을 피하려고 사용자 click의 동기 구간에서 도구 탭부터 연다.
+  window.open(YINZIAI_XHS_TOOL, "_blank", "noopener");
+  const copy = navigator.clipboard?.writeText
+    ? navigator.clipboard.writeText(it.post_url)
+    : Promise.reject(new Error("clipboard unavailable"));
+  copy.then(() => {
+    setStatus("XHS 링크를 복사했습니다. 열린 수동 도구에 붙여넣으세요.");
+  }).catch(() => {
+    prompt("이 XHS 링크를 복사해 수동 도구에 붙여넣으세요:", it.post_url);
+  });
+}
+
 // ====== 초기화 (로그인 없음 — 검색 UI 만) ======
 async function init() {
   try {
@@ -299,6 +327,14 @@ async function init() {
   $("results").addEventListener("click", (ev) => {
     const card = ev.target.closest(".card");
     if (!card) return;
+    const action = ev.target.closest("[data-card-action]");
+    if (action) {
+      if (action.dataset.cardAction === "xhs-manual") {
+        ev.preventDefault();
+        openXHSManualFallback(state.items[Number(card.getAttribute("data-idx"))]);
+      }
+      return; // 다운로드/원본/수동 action에서 card 재생을 호출하지 않는다.
+    }
     playItem(Number(card.getAttribute("data-idx"))); // data-idx 로 조회(escape 불필요)
   });
   $("modal-close").addEventListener("click", closeVideoModal);
