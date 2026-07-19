@@ -6,6 +6,8 @@ import {
   pendingPlatforms, visibleItems, selectLoadMorePlatforms,
   resetForNewSearch, ingestItems, dedupeKey, parseFilters,
   buildDownloadURL, canDownload, hasXHSManualFallback,
+  parseUrlList, isKorean, normalizeExtractResponse, normalizeTranslateResponse,
+  basisLabel,
 } from "./lib.js";
 
 test("initial platforms are XHS + Douyin and individual toggle keeps one", () => {
@@ -174,4 +176,83 @@ test("hasXHSManualFallback: true only for XHS with post_url", () => {
   assert.equal(hasXHSManualFallback({ platform: "xiaohongshu", post_url: "" }), false);
   assert.equal(hasXHSManualFallback({ platform: "douyin", post_url: "https://www.douyin.com/v/1" }), false, "XHS 전용");
   assert.equal(hasXHSManualFallback({ platform: "tiktok", post_url: "https://www.tiktok.com/x" }), false);
+});
+
+// ====== Task 5: 키워드 발견 헬퍼 ======
+test("parseUrlList: split/dedupe/drop-empty, no cap (4 URL → 4)", () => {
+  assert.deepEqual(parseUrlList("https://a.com\nhttps://b.com, https://a.com https://c.com\nhttps://d.com"),
+    ["https://a.com", "https://b.com", "https://c.com", "https://d.com"]);
+  assert.deepEqual(parseUrlList("  ,,\n \t"), []);
+  assert.deepEqual(parseUrlList(""), []);
+  // first-seen order preserved on dedupe (same token later is dropped)
+  assert.deepEqual(parseUrlList("b a b a"), ["b", "a"], "공백 분할 + 중복(first-seen) 제거");
+});
+
+test("isKorean: hangul 여부 (손 선풍기 true / 便携风扇 false / fan false)", () => {
+  assert.equal(isKorean("손 선풍기"), true);
+  assert.equal(isKorean("便携风扇"), false);
+  assert.equal(isKorean("fan"), false);
+  assert.equal(isKorean(""), false);
+  // 한글 자음/모음 없이 받침 syllable 만 판정 — 영문+한글 혼용도 true
+  assert.equal(isKorean("travel 풀다"), true);
+});
+
+test("normalizeExtractResponse: success → candidates+note; !success/결측/빈 → failed", () => {
+  const ok = normalizeExtractResponse({
+    success: true,
+    data: {
+      candidates: [
+        { keyword: "便携风扇", source_url: "u1", basis: "title", confidence: 0.9 },
+        { keyword: "", basis: "hashtag", confidence: 0.5 }, // 빈 keyword 제거
+        { keyword: "x".repeat(80), basis: "description" },                   // 64자 절단
+      ],
+      note: "추출 노트",
+    },
+  });
+  assert.equal(ok.failed, false);
+  assert.equal(ok.note, "추출 노트");
+  assert.equal(ok.candidates.length, 2, "빈 keyword 제거 + 64자 절단 후 2개");
+  assert.equal(ok.candidates[0].keyword, "便携风扇");
+  assert.equal(ok.candidates[1].keyword.length, 64, "64자 절단");
+
+  assert.equal(normalizeExtractResponse({ success: false }).failed, true);
+  assert.equal(normalizeExtractResponse({ success: true }).failed, true, "data 결측");
+  assert.equal(normalizeExtractResponse({ success: true, data: {} }).failed, true, "candidates 비배열");
+  assert.equal(normalizeExtractResponse({ success: true, data: { candidates: "x" } }).failed, true);
+  assert.equal(normalizeExtractResponse({ success: true, data: { candidates: [] } }).failed, true, "빈 배열");
+  assert.equal(normalizeExtractResponse({
+    success: true, data: { candidates: [{ keyword: "" }] },
+  }).failed, true, "정규화 후 빈 배열도 failed");
+  // note 결측 시 빈 문자열
+  const noNote = normalizeExtractResponse({ success: true, data: { candidates: [{ keyword: "k" }] } });
+  assert.equal(noNote.note, "");
+});
+
+test("normalizeTranslateResponse: success → [{zh}]; !success → failed", () => {
+  const ok = normalizeTranslateResponse({
+    success: true,
+    data: { candidates: [{ zh: "便携风扇" }, { zh: "" }, { zh: "便携风扇" }, { zh: "x".repeat(80) }] },
+  });
+  assert.equal(ok.failed, false);
+  assert.deepEqual(ok.candidates.map((c) => c.zh), ["便携风扇", "x".repeat(64)], "빈/중복 제거 + 64자 절단");
+
+  assert.equal(normalizeTranslateResponse({ success: false }).failed, true);
+  assert.equal(normalizeTranslateResponse({ success: true, data: { candidates: [] } }).failed, true);
+  assert.equal(normalizeTranslateResponse({ success: true, data: { candidates: [{ zh: "" }] } }).failed, true);
+  // 캡 5개
+  const six = normalizeTranslateResponse({
+    success: true,
+    data: { candidates: [1, 2, 3, 4, 5, 6].map((n) => ({ zh: "k" + n })) },
+  });
+  assert.equal(six.candidates.length, 5, "최대 5개");
+});
+
+test("basisLabel: title/hashtag/description/metadata 매핑 + default 메타", () => {
+  assert.equal(basisLabel("title"), "제목");
+  assert.equal(basisLabel("hashtag"), "해시태그");
+  assert.equal(basisLabel("description"), "설명");
+  assert.equal(basisLabel("metadata"), "메타");
+  assert.equal(basisLabel("unknown"), "메타");
+  assert.equal(basisLabel(undefined), "메타");
+  assert.equal(basisLabel(""), "메타");
 });

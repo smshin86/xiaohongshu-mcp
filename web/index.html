@@ -18,6 +18,14 @@
       <form id="search-form">
         <input id="keyword" type="text" placeholder="검색어 (예: 便携风扇 · travel fan)" autocomplete="off" required>
 
+        <button id="entry-mode-toggle" type="button" aria-controls="url-entry" aria-expanded="false">URL 분석</button>
+        <section id="url-entry" class="hidden">
+          <textarea id="url-input" rows="3" placeholder="URL 1~3개를 줄바꿈/쉼표로 구분 (예: https://www.xiaohongshu.com/explore/…)"></textarea>
+          <button id="analyze-btn" type="button">분석</button>
+        </section>
+
+        <div id="candidate-chips" class="candidate-chips"></div>
+
         <fieldset class="chips" id="platform-chips">
           <legend>플랫폼</legend>
           <button id="platform-all" type="button" aria-pressed="false">전체</button>

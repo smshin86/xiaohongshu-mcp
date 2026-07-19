@@ -4,6 +4,8 @@ import {
   pendingPlatforms, visibleItems, selectLoadMorePlatforms,
   resetForNewSearch, ingestItems, parseFilters,
   buildDownloadURL, canDownload, hasXHSManualFallback,
+  parseUrlList, isKorean, normalizeExtractResponse, normalizeTranslateResponse,
+  basisLabel,
 } from "./lib.js";
 
 const YINZIAI_XHS_TOOL = "https://www.yinziai.com/ko/tools/download-video-xhslink";
@@ -50,6 +52,21 @@ const api = {
     const r = await fetch("/api/v1/feeds/detail", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ feed_id: feedId, xsec_token: xsecToken, load_all_comments: false }),
+    });
+    return r.json();
+  },
+  // Task 5: 키워드 발견 — URL 분석(extract) / 한국어→중국어 번역(translate)
+  async extract(urls) {
+    const r = await fetch("/api/v1/keywords/extract", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ urls }),
+    });
+    return r.json();
+  },
+  async translate(text) {
+    const r = await fetch("/api/v1/keywords/translate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, source_lang: "ko" }),
     });
     return r.json();
   },
@@ -202,15 +219,101 @@ async function runSearch(isMore) {
 }
 
 // ====== 검색 폼 제출 (입력값을 먼저 읽고 state.keyword 검증) ======
+// 한국어 입력 → 번역 API 호출 → 중국어 후보 칩 렌더 후 STOP(사용자가 칩 선택/수정 후 재검색).
+// 번역 실패 또는 비-한국어 입력은 기존 경로(직접 입력 / 바로 검색)로 복구.
 function onSearchSubmit(ev) {
   ev.preventDefault();
-  const kw = $("keyword").value.trim(); // 입력값을 먼저 읽는다
+  const kw = $("keyword").value.trim();
   if (!kw) {
     setStatus("검색어를 입력해 주세요.");
     return;
   }
-  state = resetForNewSearch(state, kw, $("sort").value); // 커서/hasMore/아이템 리셋
+  if (isKorean(kw)) {
+    onKoreanKeyword(kw);
+    return; // STOP: runSearch 미호출
+  }
+  state = resetForNewSearch(state, kw, $("sort").value);
   runSearch(false);
+}
+
+// 한국어 키워드 → 중국어 번역 후보 칩 렌더. 실패 시 직접 중국어 입력 유도.
+async function onKoreanKeyword(kw) {
+  setStatus("번역 중…", true);
+  let res;
+  try {
+    res = await api.translate(kw);
+  } catch (e) {
+    setStatus("번역 실패 — 중국어로 직접 입력해 주세요");
+    return; // STOP
+  }
+  const norm = normalizeTranslateResponse(res);
+  if (norm.failed) {
+    setStatus("번역 실패 — 중국어로 직접 입력해 주세요");
+    return; // STOP
+  }
+  renderCandidateChips(norm.candidates.map((c) => ({ keyword: c.zh, basis: "" })));
+  setStatus("중국어 후보를 선택/수정한 뒤 다시 검색");
+}
+
+// ====== URL 분석 (entry-mode-toggle / analyze-btn) ======
+function onEntryModeToggle() {
+  const panel = $("url-entry");
+  if (!panel) return;
+  const willShow = panel.classList.contains("hidden");
+  if (willShow) show(panel); else hide(panel);
+  $("entry-mode-toggle").setAttribute("aria-expanded", String(willShow));
+}
+
+// analyze: URL 1~3개 입력 → extract API → 후보 칩 렌더. 칩 클릭 시 keyword 로 채운다.
+async function onAnalyze() {
+  const urls = parseUrlList($("url-input").value);
+  if (urls.length === 0 || urls.length > 3) {
+    setStatus("URL 1~3개를 입력해 주세요");
+    return; // STOP (silent truncate 금지)
+  }
+  setStatus("URL 분석 중…", true);
+  let res;
+  try {
+    res = await api.extract(urls);
+  } catch (e) {
+    setStatus("분석 실패 — 키워드를 직접 입력해 주세요");
+    return; // STOP
+  }
+  const norm = normalizeExtractResponse(res);
+  if (norm.failed) {
+    setStatus("분석 실패 — 키워드를 직접 입력해 주세요");
+    return; // STOP
+  }
+  renderCandidateChips(norm.candidates);
+  const extra = norm.note ? ` (${norm.note})` : "";
+  setStatus(`후보 ${norm.candidates.length}개${extra} — 선택/수정한 뒤 검색`);
+}
+
+// 후보 칩 렌더: DOM assembly 로 조립(키워드는 LLM/sidecar 출신 — innerHTML 금지).
+// 각 칩은 type="button" 이라 form submit 을 유발하지 않는다.
+function renderCandidateChips(candidates) {
+  const container = $("candidate-chips");
+  container.replaceChildren();
+  for (const c of candidates) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "cand-chip";
+    const kw = document.createElement("span");
+    kw.className = "cand-chip-kw";
+    kw.textContent = c.keyword; // untrusted — textContent
+    btn.appendChild(kw);
+    if (c.basis) {
+      const cap = document.createElement("span");
+      cap.className = "cand-chip-basis";
+      cap.textContent = basisLabel(c.basis);
+      btn.appendChild(cap);
+    }
+    btn.addEventListener("click", () => {
+      $("keyword").value = c.keyword;
+      $("keyword").focus();
+    });
+    container.appendChild(btn);
+  }
 }
 
 // ====== 영상 재생 + 원본 보기(재생 실패 대체) ======
@@ -308,6 +411,9 @@ async function init() {
 
   $("search-form").addEventListener("submit", onSearchSubmit);
   $("more-btn").addEventListener("click", () => runSearch(true));
+  // Task 5: URL 분석 진입 + 한국어 후보 칩
+  $("entry-mode-toggle").addEventListener("click", onEntryModeToggle);
+  $("analyze-btn").addEventListener("click", onAnalyze);
   $("platform-chips").addEventListener("change", (ev) => {
     const cb = ev.target.closest("input[data-platform]");
     if (!cb) return;

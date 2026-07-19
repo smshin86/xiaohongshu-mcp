@@ -217,3 +217,36 @@ body {
 .side-unavailable b { color:#b35900; }
 .badge-platform { position:absolute; top:8px; left:8px; background:rgba(0,0,0,.65); color:#fff; font-size:11px; padding:2px 6px; border-radius:4px; }
 #more-btn { display:block; margin:16px auto; padding:8px 28px; }
+
+/* === Task 5: 키워드 발견 — URL 분석 섹션 + 후보 칩 === */
+#entry-mode-toggle { align-self:flex-start; padding:6px 12px; font-size:13px; background:#fff; color:#4a6cf7; border:1px solid #cdd8ff; }
+#entry-mode-toggle[aria-expanded="true"] { background:#4a6cf7; color:#fff; border-color:#4a6cf7; }
+#url-entry { display:flex; flex-direction:column; gap:8px; }
+#url-entry.hidden { display:none !important; } /* show/hide helper 호환 */
+#url-entry textarea { width:100%; padding:10px 12px; border:1px solid var(--border,#ccc); border-radius:8px; font:inherit; font-size:14px; resize:vertical; }
+#analyze-btn { align-self:flex-start; padding:8px 16px; font-size:14px; }
+.candidate-chips { display:flex; flex-wrap:wrap; gap:8px; padding:0; margin:0; }
+.candidate-chips:empty { display:none; } /* 후보 없을 때 레이아웃 점유 방지 */
+.cand-chip {
+  appearance:none;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 12px;
+  border:1px solid var(--border,#e5e5e5);
+  border-radius:999px; /* pill */
+  background:#fff;
+  color:#222;
+  font:inherit;
+  font-size:13px;
+  cursor:pointer;
+  max-width:100%;
+  transition: border-color .15s, background .15s;
+}
+.cand-chip:hover { border-color:#4a6cf7; background:#f4f7ff; }
+.cand-chip-kw { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px; }
+.cand-chip-basis { font-size:11px; color:#888; border-left:1px solid var(--border,#eee); padding-left:6px; }
+@media (max-width: 425px) {
+  .candidate-chips { gap:6px; }
+  .cand-chip-kw { max-width:160px; }
+}

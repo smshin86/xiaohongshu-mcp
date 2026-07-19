@@ -144,3 +144,78 @@ export function buildDownloadURL(item, filename = "") {
 export function hasXHSManualFallback(item) {
   return Boolean(item) && item.platform === "xiaohongshu" && Boolean(item.post_url);
 }
+
+// ====== Task 5: 키워드 발견 헬퍼 (DOM 무의존) ======
+// parseUrlList: ws/줄바꿈/쉼표 분할·trim·빈 제거·first-seen 중복 제거. **캡 없음**(UI 가 >3 검증).
+export function parseUrlList(text) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of String(text || "").split(/[\s,]+/)) {
+    const v = raw.trim();
+    if (!v || seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  return out;
+}
+
+// isKorean: 한글 음절(가-힣)이 하나라도 포함되면 true.
+export function isKorean(text) {
+  return /[가-힣]/.test(String(text || ""));
+}
+
+// normalizeExtractResponse: extract API 응답 정규화. 실패 조건: !success, data 결측,
+// candidates 비배열, 정규화 후 빈 배열. 성공 시 빈 keyword 제거·64자 절단·최대 8개.
+export function normalizeExtractResponse(json) {
+  const failed = { failed: true, candidates: [], note: "" };
+  if (!json || !json.success || !json.data) return failed;
+  const raw = json.data.candidates;
+  if (!Array.isArray(raw)) return failed;
+  const candidates = [];
+  for (const c of raw) {
+    if (!c) continue;
+    const kw = String(c.keyword == null ? "" : c.keyword).trim();
+    if (!kw) continue;
+    candidates.push({
+      keyword: kw.length > 64 ? kw.slice(0, 64) : kw,
+      source_url: c.source_url || "",
+      basis: c.basis || "",
+      confidence: c.confidence,
+    });
+    if (candidates.length >= 8) break; // 캡 8
+  }
+  if (candidates.length === 0) return failed;
+  return { failed: false, candidates, note: json.data.note || "" };
+}
+
+// normalizeTranslateResponse: translate API 응답 정규화. 빈 zh 제거·64자 절단·
+// first-seen 중복 제거·최대 5개. 정규화 후 빈 배열은 failed.
+export function normalizeTranslateResponse(json) {
+  const failed = { failed: true, candidates: [] };
+  if (!json || !json.success || !json.data) return failed;
+  const raw = json.data.candidates;
+  if (!Array.isArray(raw)) return failed;
+  const seen = new Set();
+  const candidates = [];
+  for (const c of raw) {
+    if (!c) continue;
+    const zh = String(c.zh == null ? "" : c.zh).trim();
+    if (!zh || seen.has(zh)) continue;
+    seen.add(zh);
+    candidates.push({ zh: zh.length > 64 ? zh.slice(0, 64) : zh });
+    if (candidates.length >= 5) break; // 캡 5
+  }
+  if (candidates.length === 0) return failed;
+  return { failed: false, candidates };
+}
+
+// basisLabel: extract 후보의 basis 라벨(i18n). 정의되지 않은 값/빈 값은 메타.
+export function basisLabel(basis) {
+  switch (basis) {
+    case "title": return "제목";
+    case "hashtag": return "해시태그";
+    case "description": return "설명";
+    case "metadata": return "메타";
+    default: return "메타";
+  }
+}
