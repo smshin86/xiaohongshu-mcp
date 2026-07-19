@@ -39,18 +39,24 @@ func (o *guardedXHSDownloadOpener) Open(ctx context.Context, rawURL string) (*ht
 }
 
 func sanitizeDownloadFilename(raw, platform, postID string) string {
+	defaultName := platform + "-" + postID + ".mp4"
 	if strings.TrimSpace(raw) == "" {
-		raw = platform + "-" + postID + ".mp4"
+		raw = defaultName
 	}
-	cleaned := strings.Map(func(r rune) rune {
-		switch r {
-		case '\r', '\n', 0, '/', '\\', '"':
-			return -1
-		default:
-			return r
-		}
-	}, raw)
-	cleaned = strings.TrimSpace(cleaned)
+	clean := func(value string) string {
+		return strings.TrimSpace(strings.Map(func(r rune) rune {
+			switch r {
+			case '\r', '\n', 0, '/', '\\', '"':
+				return -1
+			default:
+				return r
+			}
+		}, value))
+	}
+	cleaned := clean(raw)
+	if cleaned == "" {
+		cleaned = clean(defaultName)
+	}
 	if cleaned == "" {
 		cleaned = platform + "-video.mp4"
 	}

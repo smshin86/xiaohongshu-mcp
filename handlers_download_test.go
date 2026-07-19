@@ -146,7 +146,7 @@ func TestDownloadDouyinStreamsAndSanitizesFilename(t *testing.T) {
 
 func TestSanitizeDownloadFilenameAlsoCleansDefaultPostID(t *testing.T) {
 	require.Equal(t, "tiktok-..evil.mp4.mp4", sanitizeDownloadFilename("", "tiktok", "../evil.mp4\r\n"))
-	require.Equal(t, "douyin-video.mp4", sanitizeDownloadFilename("\r\n/\\\"", "douyin", "p"))
+	require.Equal(t, "douyin-p.mp4", sanitizeDownloadFilename("\r\n/\\\"", "douyin", "p"))
 }
 
 func TestDownloadXHSUsesDetailURLAndRejectsClientURL(t *testing.T) {
