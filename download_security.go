@@ -66,7 +66,8 @@ func (g *downloadURLGuard) Validate(ctx context.Context, platform, rawURL string
 	if u.User != nil {
 		return nil, fmt.Errorf("%w: userinfo not allowed", errInvalidURL)
 	}
-	host := u.Hostname()
+	// 将 hostname 归一化为小写(DNS 大小写无关),使大写 CDN host 也能正确匹配后缀.
+	host := strings.ToLower(u.Hostname())
 	if host == "" {
 		return nil, fmt.Errorf("%w: empty host", errInvalidURL)
 	}
@@ -84,6 +85,10 @@ func (g *downloadURLGuard) Validate(ctx context.Context, platform, rawURL string
 	ips, err := g.resolver.LookupIPAddr(ctx, host)
 	if err != nil {
 		return nil, fmt.Errorf("%w: resolution failed", errInvalidURL)
+	}
+	// DNS 返回空结果(nil error)时没有可校验的公网 IP,直接拒绝.
+	if len(ips) == 0 {
+		return nil, errPrivateAddress
 	}
 	for _, ip := range ips {
 		if !isPublicIP(ip.IP) {

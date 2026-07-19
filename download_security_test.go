@@ -116,6 +116,7 @@ func TestDownloadURLGuard(t *testing.T) {
 		{"tiktok tiktokv", "tiktok", "https://m.tiktokv.com/x", publicResolver, ""},
 		{"tiktok byteoversea", "tiktok", "https://a.byteoversea.com/y", publicResolver, ""},
 		{"tiktok ibytedtos", "tiktok", "https://a.ibytedtos.com/z", publicResolver, ""},
+		{"uppercase host normalized", "tiktok", "https://V16.TIKTOKCDN.COM/x.m4v", publicResolver, ""},
 
 		// scheme / userinfo / platform / host / port 错误
 		{"http rejected", "xiaohongshu", "http://xhscdn.com/x", publicResolver, "scheme"},
@@ -142,6 +143,7 @@ func TestDownloadURLGuard(t *testing.T) {
 		{"private v6", "xiaohongshu", "https://xhscdn.com/x", &fakeResolver{responses: [][]net.IPAddr{ips("fc00::1")}}, "address"},
 		{"link-local v6", "xiaohongshu", "https://xhscdn.com/x", &fakeResolver{responses: [][]net.IPAddr{ips("fe80::1")}}, "address"},
 		{"v4-mapped v6 metadata", "xiaohongshu", "https://xhscdn.com/x", &fakeResolver{responses: [][]net.IPAddr{ips("::ffff:169.254.169.254")}}, "address"},
+		{"empty DNS result", "xiaohongshu", "https://xhscdn.com/x", &fakeResolver{responses: [][]net.IPAddr{{}}}, "address"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
