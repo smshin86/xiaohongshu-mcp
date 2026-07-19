@@ -124,8 +124,8 @@ def extract_keywords(
         if not isinstance(c, dict):
             continue
         idx = c.get("source_index")
-        # 범위 밖 index → URL 매핑 불가 → drop
-        if not isinstance(idx, int) or idx < 0 or idx >= len(metas):
+        # 범위 밖 / non-int / bool → URL 매핑 불가 → drop (metas index 만 신뢰)
+        if not isinstance(idx, int) or isinstance(idx, bool) or idx < 0 or idx >= len(metas):
             continue
         kw = c.get("keyword")
         if not isinstance(kw, str):

@@ -9,6 +9,7 @@
 
 import json
 
+import httpx
 import pytest
 
 from keywords import (
@@ -166,10 +167,16 @@ def test_prompt_response_and_translate_text_caps():
         big.complete("system", "user")
 
 
+def _connect_error_transport(url, headers, body):
+    """httpx.ConnectError 을 발생시키는 주입 transport — 네트워크 없이 실패 검증."""
+    raise httpx.ConnectError("simulated connect failure")
+
+
 def test_secret_not_in_transport_failure():
-    """실 네트워크(루프백 거부) 실패 시 LLMUnavailable — key 평문 비노출."""
-    # transport 주입 없음 → 진짜 httpx 경로. 127.0.0.1:1 즉시 connection refused.
-    llm = LLMClient(base="https://127.0.0.1:1/v1", key="SECRET-KEY")
+    """transport 실패 시 LLMUnavailable — key 평문 비노출(네트워크 없음)."""
+    # 주입 transport 가 ConnectError 를 raise → LLMUnavailable 로 wrapping.
+    llm = LLMClient(base="https://example.invalid/v1", key="SECRET-KEY",
+                    transport=_connect_error_transport)
     assert llm.available() is True
     with pytest.raises(LLMUnavailable) as exc_info:
         llm.complete("system", "user")
