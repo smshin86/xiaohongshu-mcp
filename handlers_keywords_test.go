@@ -19,6 +19,7 @@ type fakeKeywords struct {
 	extractErr      error
 	translateResult SidecarTranslateResult
 	translateErr    error
+	translateCalls  int // TranslateKeywords 호출 횟수(길이 검증 통과 여부 확인)
 }
 
 func (f *fakeKeywords) ExtractKeywords(ctx context.Context, urls []string) (SidecarKeywordResult, error) {
@@ -26,6 +27,7 @@ func (f *fakeKeywords) ExtractKeywords(ctx context.Context, urls []string) (Side
 }
 
 func (f *fakeKeywords) TranslateKeywords(ctx context.Context, text, sourceLang string) (SidecarTranslateResult, error) {
+	f.translateCalls++
 	return f.translateResult, f.translateErr
 }
 
@@ -128,6 +130,36 @@ func TestTranslateHandlerEmptyAndLangValidation(t *testing.T) {
 			require.Contains(t, w.Body.String(), `"success":false`)
 		})
 	}
+}
+
+// 한글 길이는 rune 단위 계약 — 정확히 200 rune 은 seam 통과(200 success), 201 rune 은 400.
+// len() 바이트 검증이면 200자 한글(=600 바이트)이 잘려 400 이 되므로 rune 경계를 명시 검증.
+func TestTranslateHandlerKoreanRuneBoundary(t *testing.T) {
+	fk := &fakeKeywords{
+		translateResult: SidecarTranslateResult{Candidates: []SidecarTranslateCandidate{{ZH: "팬"}}},
+	}
+	s := newKeywordsServer(fk)
+
+	// 정확히 200 rune → 검증 통과 → seam 호출 → 200 success:true.
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/x",
+		bytes.NewReader([]byte(`{"text":"`+strings.Repeat("가", 200)+`","source_lang":"ko"}`)))
+	c.Request.Header.Set("Content-Type", "application/json")
+	s.translateKeywordsHandler(c)
+	require.Equal(t, 200, w.Code)
+	require.Contains(t, w.Body.String(), `"success":true`)
+	require.Equal(t, 1, fk.translateCalls, "200 rune 은 길이 검증을 통과해 seam 호출")
+
+	// 201 rune → 400(seam 추가 호출 없음).
+	w2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(w2)
+	c2.Request = httptest.NewRequest(http.MethodPost, "/x",
+		bytes.NewReader([]byte(`{"text":"`+strings.Repeat("가", 201)+`","source_lang":"ko"}`)))
+	c2.Request.Header.Set("Content-Type", "application/json")
+	s.translateKeywordsHandler(c2)
+	require.Equal(t, 400, w2.Code)
+	require.Equal(t, 1, fk.translateCalls, "201 rune 은 검증 단계에서 차단돼 seam 추가 호출 없음")
 }
 
 func TestTranslateHandlerUnreachableBadGateway502(t *testing.T) {

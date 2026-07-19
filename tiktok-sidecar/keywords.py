@@ -49,6 +49,35 @@ def _truncate(text: str, cap: int) -> str:
     return text[:cap]
 
 
+def _find_matching_bracket(s: str, start: int, opener: str, closer: str) -> int:
+    """start 위치 opener 와 짝이 맞는 closer 인덱스 반환.
+
+    문자열 리터럴 안의 bracket/이스케이프 따옴표는 무시. 짝이 안 맞으면 -1.
+    """
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(s)):
+        ch = s[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
 def _parse_json_content(content: str) -> Any:
     """LLM content 에서 JSON 을 관대하게 파싱(코드펜스/잡음 허용)."""
     s = (content or "").strip()
@@ -58,14 +87,18 @@ def _parse_json_content(content: str) -> Any:
     if s.startswith("```"):
         s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
         s = re.sub(r"\n?```$", "", s).strip()
-    # 앞뒤 잡음 잘라내기 — 첫 [ 또는 { 부터 마지막 ] 또는 } 까지
     if not s.startswith(("[", "{")):
-        start = max(s.find("["), s.find("{"))
-        if start < 0:
+        # 잡음 접두/접미 → 가장 이른 유효 opener 와 짝이 맞는 closer 로 슬라이스.
+        # max(find) 면 배열 안 첫 object({) 부터 잘려 noisy array 가 깨진다.
+        starts = [i for i in (s.find("["), s.find("{")) if i >= 0]
+        if not starts:
             raise ValueError("no JSON")
-        end = max(s.rfind("]"), s.rfind("}"))
+        start = min(starts)
+        opener = s[start]
+        closer = "]" if opener == "[" else "}"
+        end = _find_matching_bracket(s, start, opener, closer)
         if end < 0:
-            raise ValueError("no JSON")
+            raise ValueError("no matching bracket")
         s = s[start:end + 1]
     return json.loads(s)
 

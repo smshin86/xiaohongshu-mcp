@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xpzouying/xiaohongshu-mcp/search"
@@ -69,7 +70,8 @@ func (s *AppServer) translateKeywordsHandler(c *gin.Context) {
 		return
 	}
 	text := strings.TrimSpace(req.Text)
-	if text == "" || len(text) > maxTranslateText {
+	// 길이는 rune 단위(한글 200자 계약) — len() 은 UTF-8 바이트 수라 한글이 과단축된다.
+	if text == "" || utf8.RuneCountInString(text) > maxTranslateText {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "키워드는 1~200자여야 합니다."})
 		return
 	}

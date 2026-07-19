@@ -21,6 +21,7 @@ from keywords import (
     MAX_TRANSLATE_TEXT,
     META_DESC_CAP,
     META_TITLE_CAP,
+    _parse_json_content,
     extract_keywords,
     translate_keywords,
 )
@@ -131,6 +132,27 @@ def test_translate_parses_zh():
     # 중복 제거
     zhs = [c["zh"] for c in out]
     assert len(zhs) == len(set(zhs))
+
+
+def test_parse_json_content_noisy_prefix_array():
+    """잡음 접두가 붙은 JSON 배열 — 가장 이른 opener([) 와 짝 맞는 closer 로 슬라이스.
+
+    구현이 max(find('[', '{')) 였다면 배열 안 첫 object({) 부터 잘려 파싱이 실패한다.
+    """
+    content = ('Sure! 결과는 다음과 같습니다: [{"keyword": "风扇", "source_index": 0,'
+               ' "basis": "title", "confidence": 0.9}] 끝.')
+    parsed = _parse_json_content(content)
+    assert isinstance(parsed, list)
+    assert parsed[0]["keyword"] == "风扇"
+    assert parsed[0]["source_index"] == 0
+
+
+def test_parse_json_content_noisy_prefix_object():
+    """잡음 접두가 붙은 JSON 객체 — 가장 이른 opener({) 와 짝 맞는 closer 로 슬라이스."""
+    content = '답변: {"zh": ["便携风扇", "风扇"]} 감사합니다.'
+    parsed = _parse_json_content(content)
+    assert isinstance(parsed, dict)
+    assert parsed["zh"] == ["便携风扇", "风扇"]
 
 
 def test_constructor_none_reads_env_but_explicit_empty_disables(monkeypatch):

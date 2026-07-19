@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -91,6 +92,13 @@ func TestStaticRoutes(t *testing.T) {
 		// 두 신규 버튼은 form submit 을 유발하지 않도록 type="button" 이어야 한다.
 		require.Contains(t, body, `<button id="entry-mode-toggle" type="button"`)
 		require.Contains(t, body, `<button id="analyze-btn" type="button"`)
+		// URL placeholder 예시는 허용 호스트(YouTube/TikTok/Instagram) 만 — XHS(allowlist 외) 제외.
+		ui := strings.Index(body, `id="url-input"`)
+		require.GreaterOrEqual(t, ui, 0, "url-input 요소 존재")
+		seg := body[ui:]
+		require.Contains(t, seg, "YouTube")
+		require.Contains(t, seg, "Instagram")
+		require.NotContains(t, seg, "xiaohongshu.com", "XHS URL 은 placeholder 예시에 없어야(allowlist 외)")
 	})
 
 	t.Run("app.js 에 keyword API path 와 이벤트 hook 존재", func(t *testing.T) {
