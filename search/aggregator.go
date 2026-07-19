@@ -42,6 +42,16 @@ func (s *AggregatorService) Availability(ctx context.Context) map[string]Availab
 		wg.Add(1)
 		go func(pname string, pad VideoAdapter) {
 			defer wg.Done()
+			// adapter panic(예: XHS go-rod MustNavigate 의 ctx cancel panic)이
+			// 프로세스를 죽이지 않도록 해당 플랫폼을 unavailable 로 흡수한다.
+			// 결과 기록은 mutex 로 즉시 반환(채널 미사용) → ctx 취소 후에도 block 없음.
+			defer func() {
+				if r := recover(); r != nil {
+					mu.Lock()
+					out[pname] = Availability{Available: false, Reason: "플랫폼 가용성 확인 중 오류가 발생했습니다"}
+					mu.Unlock()
+				}
+			}()
 			timeout := perAdapterTimeout[pname]
 			if timeout == 0 {
 				timeout = 45 * time.Second
@@ -77,6 +87,17 @@ func (s *AggregatorService) Search(ctx context.Context, req AggregatorRequest) (
 		wg.Add(1)
 		go func(idx int, pname string) {
 			defer wg.Done()
+			// runSide 내부의 adapter panic(예: go-rod Must* 의 ctx cancel panic)이
+			// 프로세스를 죽이지 않도록 해당 사이드를 unavailable 로 흡수한다.
+			// outs[idx] 는 각 goroutine 이 고유 인덱스에만 쓰므로 별도 락 없이 안전.
+			defer func() {
+				if r := recover(); r != nil {
+					outs[idx] = sideOut{name: pname, res: SideResult{
+						Available: Availability{Available: false, Reason: "검색 중 오류가 발생했습니다"},
+						Error:     "검색 중 오류가 발생했습니다",
+					}}
+				}
+			}()
 			outs[idx] = s.runSide(ctx, pname, req)
 		}(i, name)
 	}

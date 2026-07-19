@@ -102,6 +102,13 @@ func (s *XiaohongshuService) DeleteCookies(ctx context.Context) error {
 
 // CheckLoginStatus 检查登录状态
 func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatusResponse, error) {
+	// fast path: 저장된 쿠키가 없으면 무조건 미로그인. 브라우저(go-rod) 기동 자체를 건너뛰어
+	// MustNavigate panic/crash 경로를 원천 차단한다(capabilities 호출 시마다 매번 브라우저를
+	// 띄우던 비용과 취약성도 함께 제거).
+	if !xhsHasSavedCookies() {
+		return &LoginStatusResponse{IsLoggedIn: false, Username: configs.Username}, nil
+	}
+
 	b := newBrowser()
 	defer b.Close()
 
@@ -121,6 +128,21 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 	}
 
 	return response, nil
+}
+
+// savedCookiesAt: 주어진 경로에 0보다 큰 크기의 쿠키 파일이 존재하면 true.
+// 임시 경로로 단위 테스트 가능하도록 path 인자로 분리했다.
+func savedCookiesAt(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir() && info.Size() > 0
+}
+
+// xhsHasSavedCookies: XHS 쿠키 파일 존재 여부(savedCookiesAt 의 실제 경로 바인딩).
+func xhsHasSavedCookies() bool {
+	return savedCookiesAt(cookies.GetCookiesFilePath())
 }
 
 // GetLoginQrcode 获取登录的扫码二维码

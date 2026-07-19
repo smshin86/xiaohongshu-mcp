@@ -175,3 +175,54 @@ func TestAggregatorAvailabilityIsolatesSlowProbe(t *testing.T) {
 	require.False(t, out["xiaohongshu"].Available, "타임아웃 난 XHS probe 는 unavailable")
 	require.True(t, out["douyin"].Available, "지연 사이드와 무관하게 douyin 가용성이 계산되어야 함")
 }
+
+// panickingAdapter: Available/Search 가 context cancel 등으로 panic(go-rod Must* 시뮬레이션).
+// Availability/Search goroutine 의 panic 격리를 검증한다.
+type panickingAdapter struct {
+	name string
+}
+
+func (p *panickingAdapter) Name() string { return p.name }
+func (p *panickingAdapter) Available(ctx context.Context) Availability {
+	panic("simulated go-rod panic on context canceled")
+}
+func (p *panickingAdapter) Search(ctx context.Context, q SearchQuery) (AdapterSearchPage, error) {
+	panic("simulated go-rod search panic on context canceled")
+}
+
+func TestAggregatorAvailabilityIsolatesAdapterPanic(t *testing.T) {
+	// 회귀: XHS 의 Available panic(go-rod MustNavigate 의 ctx cancel panic)이
+	// 프로세스를 죽이면 안 된다. (1) panic 난 플랫폼은 unavailable,
+	// (2) 다른 플랫폼 응답은 보존.
+	svc := NewAggregatorService(map[string]VideoAdapter{
+		"xiaohongshu": &panickingAdapter{name: "xiaohongshu"},
+		"douyin":      &fakeAdapter{name: "douyin", avail: Availability{Available: true}},
+		"tiktok":      &fakeAdapter{name: "tiktok", avail: Availability{Available: true}},
+	})
+
+	out := svc.Availability(context.Background())
+
+	require.False(t, out["xiaohongshu"].Available, "panic 난 XHS 는 unavailable")
+	require.True(t, out["douyin"].Available, "XHS panic 과 무관하게 douyin 보존")
+	require.True(t, out["tiktok"].Available, "XHS panic 과 무관하게 tiktok 보존")
+}
+
+func TestAggregatorSearchIsolatesAdapterPanic(t *testing.T) {
+	// 회귀: Search 경로(runSide) 에서 adapter panic 이 프로세스를 죽이면 안 된다.
+	// panic 난 사이드는 unavailable, 다른 사이드 결과는 보존.
+	svc := NewAggregatorService(map[string]VideoAdapter{
+		"xiaohongshu": &panickingAdapter{name: "xiaohongshu"},
+		"douyin":      &fakeAdapter{name: "douyin", avail: Availability{Available: true}, items: []VideoItem{{Platform: "douyin", PostID: "d1"}}},
+	})
+
+	res, err := svc.Search(context.Background(), AggregatorRequest{
+		Keyword:   "便携风扇",
+		Platforms: []string{"xiaohongshu", "douyin"},
+		Sort:      "relevance",
+		Filters:   SearchFilters{PerPlatformLimit: 5, VideoOnly: true},
+	})
+	require.NoError(t, err)
+	require.False(t, res.Sides["xiaohongshu"].Available.Available, "panic 난 XHS side 는 unavailable")
+	require.True(t, res.Sides["douyin"].Available.Available, "douyin side 보존")
+	require.Len(t, res.Sides["douyin"].Items, 1)
+}
