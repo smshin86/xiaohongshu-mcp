@@ -25,6 +25,7 @@ type fakeBS struct {
 	panicOnStart   bool
 	panicOnFetch   bool
 	panicOnConfirm int
+	panicOnClose   bool
 	startCheckCtx  bool // Start 가 ctx 를 검사할지
 
 	mu           sync.Mutex
@@ -93,6 +94,9 @@ var fakeRodPage = &rod.Page{}
 func (f *fakeBS) Page() *rod.Page { return fakeRodPage }
 
 func (f *fakeBS) Close() error {
+	if f.panicOnClose {
+		panic("fake close panic")
+	}
 	f.mu.Lock()
 	f.closed++
 	f.mu.Unlock()
@@ -463,5 +467,29 @@ func TestStartLoginDuringLogout(t *testing.T) {
 	require.NotEmpty(t, allBS, "a session must have been created")
 	for _, b := range allBS {
 		require.GreaterOrEqual(t, b.closeCount(), 1, "every created session must be closed (no leak)")
+	}
+}
+
+// TestStartLoginLocalClosePanicSafe: Start/Fetch 실패(panic 또는 error) 시 로컬 bs 정리에서
+// Close 자체가 panic 해도 StartLogin 은 정상 error 반환 + State Idle 로 끝난다(최종 리뷰).
+// 로컬 정리를 직접 bs.Close() 로 했다면 recover 중 재패닉으로 프로세스가 죽는다 →
+// 모든 로컬 정리 경로(defer/Start/Fetch/superseded)는 closeBSPanicSafe 로 통일.
+func TestStartLoginLocalClosePanicSafe(t *testing.T) {
+	cases := []struct {
+		name string
+		bs   *fakeBS
+	}{
+		{"start error", &fakeBS{startErr: errors.New("start boom"), panicOnClose: true}},
+		{"start panic", &fakeBS{panicOnStart: true, panicOnClose: true}},
+		{"fetch error", &fakeBS{fetchImg: "qr", fetchErr: errors.New("fetch boom"), panicOnClose: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := newTestManager(t, func() BrowserSession { return c.bs }, nil)
+			_, _, err := m.StartLogin(context.Background())
+			require.Error(t, err)
+			require.False(t, m.LoggedIn())
+			require.Equal(t, StateIdle, m.State())
+		})
 	}
 }

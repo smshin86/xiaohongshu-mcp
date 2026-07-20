@@ -124,7 +124,9 @@ func (m *Manager) StartLogin(ctx context.Context) (img string, already bool, err
 	defer func() {
 		if r := recover(); r != nil {
 			if !handedOver && bs != nil {
-				_ = bs.Close() // 매니저 인계 전 패닉: 로컬 bs 정리
+				// 매니저 인계 전 패닉: 로컬 bs 정리. Close 자체 패닉 시 재패닉으로
+				// 프로세스가 죽으므로 panic-safe 헬퍼로 통일.
+				closeBSPanicSafe(bs)
 			}
 			m.mu.Lock()
 			m.invalidateLocked() // 인계 후 패닉: 매니저 세션 정리(panic-safe)
@@ -145,12 +147,12 @@ func (m *Manager) StartLogin(ctx context.Context) (img string, already bool, err
 	m.mu.Unlock()
 
 	if err = bs.Start(ctx); err != nil {
-		_ = bs.Close()
+		closeBSPanicSafe(bs)
 		return "", false, errors.Wrap(err, "start browser session")
 	}
 	img, already, err = bs.FetchQrcode(ctx)
 	if err != nil {
-		_ = bs.Close()
+		closeBSPanicSafe(bs)
 		return "", false, errors.Wrap(err, "fetch qrcode")
 	}
 
@@ -161,7 +163,7 @@ func (m *Manager) StartLogin(ctx context.Context) (img string, already bool, err
 	// generation 검증: Start/Fetch 중 Logout 등이 무효화했으면 이 세션은 폐기.
 	if m.gen != installGen {
 		m.mu.Unlock()
-		_ = bs.Close()
+		closeBSPanicSafe(bs)
 		return "", false, errors.New("start login superseded by logout or replace")
 	}
 	m.bs = bs
