@@ -73,15 +73,18 @@ func TestCheckLoginStatusLiveAuthed(t *testing.T) {
 // XHS 가 검색/유휴 중 세션을 무효화해도 status API 가 stale true 를 주지 않게 하는 회귀.
 func TestCheckLoginStatusLiveAuthLost(t *testing.T) {
 	fs := &fakeSession{loggedIn: true}
+	purgeCalls := 0
 	s := &XiaohongshuService{
-		session:  fs,
-		liveAuth: func(context.Context) (bool, error) { return false, nil },
+		session:       fs,
+		liveAuth:      func(context.Context) (bool, error) { return false, nil },
+		deleteAuthNow: func() error { purgeCalls++; return nil },
 	}
 
 	resp, err := s.CheckLoginStatus(context.Background())
 	require.NoError(t, err)
 	require.False(t, resp.IsLoggedIn, "live auth loss → false")
 	require.GreaterOrEqual(t, fs.logoutCalls, 1, "세션 invalidate(Logout) 호출")
+	require.Equal(t, 1, purgeCalls, "저장 인증 파일도 함께 정리")
 }
 
 // TestCheckLoginStatusTransientErrorKeepsSession: liveAuth 가 일시적 에러(네트워크 등)를

@@ -204,10 +204,10 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 	case err == nil && authed:
 		return &LoginStatusResponse{IsLoggedIn: true, Username: configs.Username}, nil
 	case err == nil && !authed:
-		// live 페이지가 미인증(세션 단절) 확인 → invalidate/Close.
-		if s.session != nil {
-			_ = s.session.Logout()
-		}
+		// live 페이지가 미인증(세션 단절) 확인 → 세션과 저장 인증을 함께
+		// 무효화한다. 파일을 남기면 다음 status 호출이 fallback 으로 같은
+		// 무효 세션을 다시 재생할 수 있다.
+		s.purgeAuthState()
 		return &LoginStatusResponse{IsLoggedIn: false, Username: configs.Username}, nil
 	default:
 		// 일시적 에러(네트워크/ctx) 는 단절 확정이 아니므로 세션 유지 + false.
@@ -221,7 +221,10 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 func (s *XiaohongshuService) checkLiveAuth(ctx context.Context) (bool, error) {
 	var authed bool
 	err := s.session.WithPage(ctx, func(page *rod.Page) error {
-		ok, e := xiaohongshu.NewLogin(page).CheckLoginStatus(ctx)
+		// 현재 live 페이지를 그대로 검사한다. CheckLoginStatus 는 /explore 로
+		// navigate 하므로 검색 중인 페이지를 바꾸고 실제 auth-loss 상태를
+		// 가릴 수 있다.
+		ok, e := xiaohongshu.NewLogin(page).IsAuthenticated(ctx)
 		authed = ok
 		return e
 	})

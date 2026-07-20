@@ -247,9 +247,12 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	if err := ensureSearchAuthed(page); err != nil {
 		return nil, err
 	}
-	// feeds 준비 대기(bounded): search 상태가 읽힐 때까지 짧게.
+	// feeds 준비 대기(bounded): search 객체만 생긴 중간 상태가 아니라 feeds
+	// 필드까지 읽을 수 있을 때까지 기다린다.
 	if err := page.Timeout(searchFeedsReadyTimeout).Wait(
-		rod.Eval(`() => window.__INITIAL_STATE__ && window.__INITIAL_STATE__.search !== undefined`)); err != nil {
+		rod.Eval(`() => window.__INITIAL_STATE__ &&
+			window.__INITIAL_STATE__.search !== undefined &&
+			window.__INITIAL_STATE__.search.feeds !== undefined`)); err != nil {
 		return nil, fmt.Errorf("wait search state failed: %w", err)
 	}
 
