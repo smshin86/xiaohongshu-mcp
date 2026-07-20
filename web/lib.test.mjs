@@ -7,7 +7,7 @@ import {
   resetForNewSearch, ingestItems, dedupeKey, parseFilters,
   buildDownloadURL, canDownload, hasXHSManualFallback,
   parseUrlList, isKorean, normalizeExtractResponse, normalizeTranslateResponse,
-  basisLabel,
+  basisLabel, parseGoDurationMs, loginPollDecision,
 } from "./lib.js";
 
 test("initial platforms are XHS + Douyin and individual toggle keeps one", () => {
@@ -255,4 +255,29 @@ test("basisLabel: title/hashtag/description/metadata 매핑 + default 메타", (
   assert.equal(basisLabel("unknown"), "메타");
   assert.equal(basisLabel(undefined), "메타");
   assert.equal(basisLabel(""), "메타");
+});
+
+// ====== 설정 UI: 로그인 폴링 상한(무한 폴링 제거) ======
+test("parseGoDurationMs: Go duration → ms (4m0s=240000, 90s, 1h30m, 빈/불가=0)", () => {
+  assert.equal(parseGoDurationMs("4m0s"), 240000);
+  assert.equal(parseGoDurationMs("90s"), 90000);
+  assert.equal(parseGoDurationMs("1h30m"), 5400000);
+  assert.equal(parseGoDurationMs("500ms"), 500);
+  assert.equal(parseGoDurationMs(""), 0, "빈 → 0");
+  assert.equal(parseGoDurationMs(null), 0, "비문자열 → 0");
+  assert.equal(parseGoDurationMs("not-a-duration"), 0, "파싱 불가 → 0");
+  assert.equal(parseGoDurationMs(undefined), 0);
+});
+
+test("loginPollDecision: 로그인 성공→logged_in / deadline 경과→expired / 그외→poll", () => {
+  const deadline = 100000;
+  // (1) 로그인됨 → 항상 logged_in(deadline 과 무관).
+  assert.equal(loginPollDecision({ isLoggedIn: true, now: deadline + 999, deadline }), "logged_in");
+  // (2) 미로그인 + deadline 전 → poll.
+  assert.equal(loginPollDecision({ isLoggedIn: false, now: deadline - 1, deadline }), "poll");
+  // (3) 미로그인 + deadline 도달/경과 → expired(무한 폴링 중단).
+  assert.equal(loginPollDecision({ isLoggedIn: false, now: deadline, deadline }), "expired");
+  assert.equal(loginPollDecision({ isLoggedIn: false, now: deadline + 1, deadline }), "expired");
+  // (4) deadline 알 수 없음(0) + 미로그인 → poll(호출자가 상한 보장).
+  assert.equal(loginPollDecision({ isLoggedIn: false, now: 9999, deadline: 0 }), "poll");
 });

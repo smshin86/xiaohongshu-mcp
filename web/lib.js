@@ -219,3 +219,28 @@ export function basisLabel(basis) {
     default: return "메타";
   }
 }
+
+// parseGoDurationMs: Go duration 문자열("4m0s", "90s", "1h30m") → ms.
+// QR 응답의 timeout 필드(서버 loginWait) 를 폴링 상한으로 변환. 파싱 불가/빈 값 → 0.
+export function parseGoDurationMs(s) {
+  if (typeof s !== "string" || !s) return 0;
+  const units = { ms: 1, s: 1000, m: 60000, h: 3600000 };
+  const re = /(\d+)(ms|s|m|h)/g;
+  let total = 0;
+  let matched = false;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    matched = true;
+    total += Number(m[1]) * units[m[2]];
+  }
+  return matched ? total : 0;
+}
+
+// loginPollDecision: 로그인 폴링 결정(순수). 반환: "logged_in" | "expired" | "poll".
+// QR timeout(deadline) 경과 시 "expired" 로 폴링을 중단해 무한 폴링을 막는다.
+// deadline<=0(알 수 없음) 이면 로그인 전까지 계속 poll — 호출자가 상한을 보장해야 한다.
+export function loginPollDecision({ isLoggedIn, now, deadline }) {
+  if (isLoggedIn) return "logged_in";
+  if (deadline > 0 && now >= deadline) return "expired";
+  return "poll";
+}
