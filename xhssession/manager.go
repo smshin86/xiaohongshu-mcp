@@ -94,45 +94,58 @@ func (m *Manager) State() State {
 	return m.state
 }
 
-// LoggedIn 재사용 가능한 인증 세션이 있는지.
+// LoggedIn: 재사용 가능한 인증 세션이 있는지. TTL 만료 시 즉시 invalidate/Close
+// 해 브라우저 누수를 막는다(단순 false 반환만 하면 상태 확인 반복 시 만료 세션이 쌓임).
 func (m *Manager) LoggedIn() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.state == StateLoggedIn && m.expiredLocked() {
+		m.invalidateLocked()
+		return false
+	}
 	return m.reusableLocked()
 }
 
 // StartLogin: 기존 세션을 교체하고 새 QR 세션을 시작한다. QR 만료/재시도 시 반복 호출.
-// 이미 로그인 상태면 alreadyLoggedIn=true.
-func (m *Manager) StartLogin(ctx context.Context) (string, bool, error) {
+// already(이미 로그인) 신호는 응답 힌트로만 쓰고, LoggedIn 전이는 항상
+// waitForLogin 의 robust ConfirmLogin 을 통과해야 한다(weak already 거부).
+// newBS/Start/Fetch 패닉 시 복구해 세션을 정리하고 error 로 반환한다(HTTP 프로세스 보호).
+func (m *Manager) StartLogin(ctx context.Context) (img string, already bool, err error) {
+	bs := m.newBS()
+	handedOver := false
+	defer func() {
+		if r := recover(); r != nil {
+			if !handedOver && bs != nil {
+				_ = bs.Close() // 매니저 인계 전 패닉: 로컬 bs 정리
+			}
+			m.mu.Lock()
+			m.invalidateLocked() // 인계 후 패닉: 매니저 세션 정리
+			m.mu.Unlock()
+			err = errors.Errorf("start login panic recovered: %v", r)
+		}
+	}()
+
 	m.mu.Lock()
 	m.invalidateLocked() // 중복 QR 교체: 기존 세션/진행 중 로그인 정리
+	m.mu.Unlock()
 
-	bs := m.newBS()
-	if err := bs.Start(ctx); err != nil {
-		m.mu.Unlock()
+	if err = bs.Start(ctx); err != nil {
 		_ = bs.Close()
 		return "", false, errors.Wrap(err, "start browser session")
 	}
-	img, already, err := bs.FetchQrcode(ctx)
+	img, already, err = bs.FetchQrcode(ctx)
 	if err != nil {
 		_ = bs.Close()
-		m.mu.Unlock()
 		return "", false, errors.Wrap(err, "fetch qrcode")
 	}
 
+	m.mu.Lock()
 	m.gen++
 	m.bs = bs
 	m.page = bs.Page()
-	if already {
-		m.state = StateLoggedIn
-		m.confirmedAt = m.now()
-		if m.onConfirm != nil {
-			m.onConfirm(m.page)
-		}
-		m.mu.Unlock()
-		return img, true, nil
-	}
-
+	handedOver = true
+	// already 여부와 무관하게 항상 QRPending + waitForLogin 로 robust 확인한다.
+	// weak already(loggedIn 만 true)는 ConfirmLogin 가 거부해 LoggedIn 전이/영속화 안 함.
 	m.state = StateQRPending
 	lctx, cancel := context.WithTimeout(context.Background(), m.loginWait)
 	m.loginCancel = cancel
@@ -140,7 +153,7 @@ func (m *Manager) StartLogin(ctx context.Context) (string, bool, error) {
 	m.mu.Unlock()
 
 	go m.waitForLogin(lctx, myGen)
-	return img, false, nil
+	return img, already, nil
 }
 
 // waitForLogin: QR 스캔 완료까지 ConfirmLogin 폴링. 패닉/ctx 복구 포함.

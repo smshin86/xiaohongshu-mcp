@@ -14,15 +14,17 @@ import (
 
 // fakeBS: BrowserSession 테스트용 가짜. 값 검증은 하지 않는다.
 type fakeBS struct {
-	startErr   error
-	fetchImg   string
-	fetchAlready bool
-	fetchErr   error
-	confirmOk  bool
-	confirmErr error
-	confirmDelay time.Duration
+	startErr       error
+	fetchImg       string
+	fetchAlready   bool
+	fetchErr       error
+	confirmOk      bool
+	confirmErr     error
+	confirmDelay   time.Duration
+	panicOnStart   bool
+	panicOnFetch   bool
 	panicOnConfirm int
-	startCheckCtx bool // Start 가 ctx 를 검사할지
+	startCheckCtx  bool // Start 가 ctx 를 검사할지
 
 	mu           sync.Mutex
 	started      bool
@@ -31,6 +33,9 @@ type fakeBS struct {
 }
 
 func (f *fakeBS) Start(ctx context.Context) error {
+	if f.panicOnStart {
+		panic("fake start panic")
+	}
 	if f.startCheckCtx && ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -41,6 +46,9 @@ func (f *fakeBS) Start(ctx context.Context) error {
 }
 
 func (f *fakeBS) FetchQrcode(ctx context.Context) (string, bool, error) {
+	if f.panicOnFetch {
+		panic("fake fetch panic")
+	}
 	if ctx.Err() != nil {
 		return "", false, ctx.Err()
 	}
@@ -90,7 +98,7 @@ func (f *fakeBS) closeCount() int {
 // fakeClock: 주입 가능한 시계(TTL 테스트용).
 type fakeClock struct{ t time.Time }
 
-func (c *fakeClock) now() time.Time { return c.t }
+func (c *fakeClock) now() time.Time          { return c.t }
 func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func newTestManager(t *testing.T, bsFactory func() BrowserSession, clk *fakeClock) *Manager {
@@ -264,4 +272,85 @@ func TestConcurrentAccessNoRace(t *testing.T) {
 
 	wg.Wait()
 	_ = bs
+}
+
+// TestWeakAlreadyRejected: FetchQrcode 가 already=true(weak 신호)를 반환해도
+// ConfirmLogin(robust) 이 false 면 LoggedIn 전이/영속화 가 없어야 한다(#1 회귀).
+func TestWeakAlreadyRejected(t *testing.T) {
+	var persisted int32
+	bs := &fakeBS{fetchAlready: true, confirmOk: false, confirmDelay: time.Hour}
+	m := NewManager(func() BrowserSession { return bs },
+		WithClock((&fakeClock{t: time.Unix(1700000000, 0)}).now),
+		WithPollEvery(5*time.Millisecond),
+		WithLoginWait(200*time.Millisecond),
+		WithTTL(time.Minute),
+		WithOnConfirm(func(*rod.Page) { atomic.AddInt32(&persisted, 1) }),
+	)
+
+	img, already, err := m.StartLogin(context.Background())
+	require.NoError(t, err)
+	require.True(t, already, "response hint may carry already")
+	require.Empty(t, img)
+	require.NotEqual(t, StateLoggedIn, m.State(), "must not transition to LoggedIn on weak already")
+	require.False(t, m.LoggedIn())
+	require.Equal(t, int32(0), atomic.LoadInt32(&persisted), "must not persist on weak already")
+}
+
+// TestLoggedInTTLClose: TTL 만료 시 LoggedIn 은 false 고 브라우저도 즉시 닫힌다(#3 회귀).
+// 반복 조회해도 추가 close/누수 가 없어야 한다.
+func TestLoggedInTTLClose(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1700000000, 0)}
+	bs := &fakeBS{fetchImg: "qr", confirmOk: true}
+	m := newTestManager(t, func() BrowserSession { return bs }, clk)
+
+	_, _, _ = m.StartLogin(context.Background())
+	require.Eventually(t, func() bool { return m.LoggedIn() }, time.Second, 5*time.Millisecond)
+
+	clk.advance(2 * time.Minute) // TTL(1m) 경과
+	require.False(t, m.LoggedIn(), "expired must report not logged in")
+	require.GreaterOrEqual(t, bs.closeCount(), 1, "expired session must be closed immediately")
+
+	// 반복 조회 → 이미 Idle 이므로 추가 close 없음(누수 아님).
+	_ = m.LoggedIn()
+	require.Equal(t, 1, bs.closeCount())
+}
+
+// TestStartLoginStartPanic: bs.Start 패닉 시 복구 → error 반환, LoggedIn/상태 정리(#4 회귀).
+func TestStartLoginStartPanic(t *testing.T) {
+	bs := &fakeBS{panicOnStart: true}
+	m := newTestManager(t, func() BrowserSession { return bs }, nil)
+
+	_, _, err := m.StartLogin(context.Background())
+	require.Error(t, err)
+	require.False(t, m.LoggedIn())
+	require.Equal(t, StateIdle, m.State())
+}
+
+// TestStartLoginFetchPanic: bs.FetchQrcode 패닉 시 복구 → error 반환 + bs 정리(#4 회귀).
+func TestStartLoginFetchPanic(t *testing.T) {
+	bs := &fakeBS{fetchImg: "qr", panicOnFetch: true}
+	m := newTestManager(t, func() BrowserSession { return bs }, nil)
+
+	_, _, err := m.StartLogin(context.Background())
+	require.Error(t, err)
+	require.False(t, m.LoggedIn())
+	require.Equal(t, StateIdle, m.State())
+	require.GreaterOrEqual(t, bs.closeCount(), 1, "local bs must be closed after fetch panic")
+}
+
+// TestOnConfirmPanicRecovered: onConfirm 패닉 시 waitForLogin 복구 → 세션 무효화(#4 회귀).
+func TestOnConfirmPanicRecovered(t *testing.T) {
+	bs := &fakeBS{fetchImg: "qr", confirmOk: true}
+	m := NewManager(func() BrowserSession { return bs },
+		WithClock((&fakeClock{t: time.Unix(1700000000, 0)}).now),
+		WithPollEvery(5*time.Millisecond),
+		WithLoginWait(200*time.Millisecond),
+		WithTTL(time.Minute),
+		WithOnConfirm(func(*rod.Page) { panic("onConfirm boom") }),
+	)
+
+	_, _, _ = m.StartLogin(context.Background())
+	require.Eventually(t, func() bool { return bs.closeCount() >= 1 }, time.Second, 5*time.Millisecond)
+	require.False(t, m.LoggedIn(), "session must be invalidated after onConfirm panic")
+	require.Equal(t, StateIdle, m.State())
 }
