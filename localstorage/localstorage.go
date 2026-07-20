@@ -6,9 +6,9 @@ package localstorage
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 
 	"github.com/pkg/errors"
+	"github.com/xpzouying/xiaohongshu-mcp/pkg/secfile"
 )
 
 const (
@@ -82,7 +82,8 @@ func (f *fileStorer) Save(entries []Entry) error {
 	if len(data) > maxSize {
 		return errors.Errorf("local storage payload too large: %d bytes", len(data))
 	}
-	return atomicWrite(f.path, data, 0600)
+	// 0600 원자적 write(temp+rename) — pkg/secfile 공용 유틸.
+	return secfile.WriteFile(f.path, data, 0600)
 }
 
 // Load: missing -> ErrNotFound; malformed/oversize/wrong-origin -> error.
@@ -122,33 +123,6 @@ func (f *fileStorer) Delete() error {
 			return nil
 		}
 		return errors.Wrap(err, "delete local storage")
-	}
-	return nil
-}
-
-// atomicWrite: 같은 디렉토리 임시 파일에 쓰고 perm 설정 뒤 rename(원자적 교체).
-func atomicWrite(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".ls-*")
-	if err != nil {
-		return errors.Wrap(err, "create temp file")
-	}
-	tmp := f.Name()
-	defer os.Remove(tmp) // rename 성공 시 이미 이동됨(no-op)
-
-	if err := f.Chmod(perm); err != nil {
-		_ = f.Close()
-		return errors.Wrap(err, "chmod temp file")
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return errors.Wrap(err, "write temp file")
-	}
-	if err := f.Close(); err != nil {
-		return errors.Wrap(err, "close temp file")
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		return errors.Wrap(err, "rename temp file")
 	}
 	return nil
 }
