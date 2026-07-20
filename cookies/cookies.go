@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/pkg/errors"
+	"github.com/xpzouying/xiaohongshu-mcp/pkg/secfile"
 )
 
 type Cookier interface {
@@ -38,9 +39,9 @@ func (c *localCookie) LoadCookies() ([]byte, error) {
 	return data, nil
 }
 
-// SaveCookies 保存 cookies 到文件中。
+// SaveCookies 保存 cookies 到文件中(0600 원자적 write — 로그인 비밀값 보호).
 func (c *localCookie) SaveCookies(data []byte) error {
-	return os.WriteFile(c.path, data, 0644)
+	return secfile.WriteFile(c.path, data, 0600)
 }
 
 // DeleteCookies 删除 cookies 文件。

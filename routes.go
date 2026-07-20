@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -13,7 +14,16 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 
 	router := gin.New()
-	router.Use(gin.Logger())
+	// Signed media URL query에는 token/cookie가 포함될 수 있으므로 path만 기록한다.
+	router.Use(gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
+		return fmt.Sprintf("[GIN] %v | %3d | %13v | %-7s %s\n",
+			param.TimeStamp.Format("2006/01/02 - 15:04:05"),
+			param.StatusCode,
+			param.Latency,
+			param.Method,
+			param.Request.URL.Path,
+		)
+	}))
 	router.Use(gin.Recovery())
 
 	// 添加中间件
@@ -51,7 +61,22 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 		api.POST("/feeds/comment", appServer.postCommentHandler)
 		api.POST("/feeds/comment/reply", appServer.replyCommentHandler)
 		api.GET("/user/me", appServer.myProfileHandler)
+		api.POST("/search", appServer.unifiedSearchHandler)
+		api.GET("/search/capabilities", appServer.searchCapabilitiesHandler)
+		api.GET("/download", appServer.downloadHandler)
+		api.POST("/keywords/extract", appServer.extractKeywordsHandler)
+		api.POST("/keywords/translate", appServer.translateKeywordsHandler)
 	}
+
+	// 한국어 검색 페이지 정적 서빙 (같은 출처)
+	router.Static("/static", "./web")
+	router.GET("/", func(c *gin.Context) {
+		c.File("./web/index.html")
+	})
+	// 로컬 설정 페이지(플랫폼 로그인). 검색 화면과 분리.
+	router.GET("/settings", func(c *gin.Context) {
+		c.File("./web/settings.html")
+	})
 
 	return router
 }

@@ -103,6 +103,7 @@ type FeedDetail struct {
 	User         User              `json:"user"`
 	InteractInfo InteractInfo      `json:"interactInfo"`
 	ImageList    []DetailImageInfo `json:"imageList"`
+	Video        *DetailVideo      `json:"video,omitempty"` // 영상 정보(상세 페이지에서 추출)
 }
 
 // DetailImageInfo 表示详情页的图片信息
@@ -167,4 +168,34 @@ type UserInteractions struct {
 	Type  string `json:"type"`  // follows fans interaction
 	Name  string `json:"name"`  // 关注 粉丝 获赞与收藏
 	Count string `json:"count"` // 数量
+}
+
+// DetailVideo 영상 정보 (상세 페이지 __INITIAL_STATE__ 에서 추출)
+type DetailVideo struct {
+	Media DetailMedia `json:"media"`
+}
+
+// DetailMedia 영상 미디어 스트림 모음
+type DetailMedia struct {
+	// stream: { h264: [{masterUrl}], h265: [...], av1: [...] }
+	Stream map[string][]DetailStreamItem `json:"stream"`
+}
+
+// DetailStreamItem 단일 스트림 항목
+type DetailStreamItem struct {
+	MasterURL string `json:"masterUrl"`
+}
+
+// VideoURL 은 h264 > h265 > av1 순으로 첫 번째 유효한 masterUrl 을 반환한다.
+// 없으면 빈 문자열을 반환한다.
+func (v *DetailVideo) VideoURL() string {
+	if v == nil {
+		return ""
+	}
+	for _, codec := range []string{"h264", "h265", "av1"} {
+		if items := v.Media.Stream[codec]; len(items) > 0 && items[0].MasterURL != "" {
+			return items[0].MasterURL
+		}
+	}
+	return ""
 }

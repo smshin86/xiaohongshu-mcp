@@ -1,0 +1,252 @@
+:root {
+  --red: #ff2442;
+  --bg: #f7f7f8;
+  --card: #ffffff;
+  --text: #222;
+  --muted: #888;
+  --border: #eee;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.header {
+  text-align: center;
+  padding: 24px 16px 8px;
+}
+.header h1 { margin: 0; font-size: 22px; color: var(--red); }
+.subtitle { margin: 6px 0 0; color: var(--muted); font-size: 14px; }
+
+#app { max-width: 1100px; margin: 0 auto; padding: 16px; }
+
+#search-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+#keyword {
+  flex: 1;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 15px;
+}
+#search-form button {
+  padding: 12px 20px;
+  border: none;
+  border-radius: 10px;
+  background: var(--red);
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+#status { color: var(--muted); padding: 8px 0; min-height: 20px; }
+
+.spinner {
+  display: inline-block;
+  width: 16px; height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--red);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+.card:hover { transform: translateY(-2px); }
+.card-cover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: #eee;
+  display: block;
+}
+.badge-video {
+  position: absolute;
+  left: 8px; bottom: 8px;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.card-body { padding: 10px 12px; }
+.card-title {
+  font-size: 14px;
+  margin: 0 0 8px;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.card-meta { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+.card-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+.card-action {
+  appearance:none;
+  border:1px solid var(--border);
+  border-radius:7px;
+  background:#fff;
+  color:#4a6cf7;
+  cursor:pointer;
+  font:inherit;
+  font-size:12px;
+  line-height:1.3;
+  padding:6px 8px;
+  text-decoration:none;
+}
+.card-action:hover { border-color:#4a6cf7; }
+.card-action.is-disabled { color:#aaa; cursor:not-allowed; background:#f5f5f5; }
+.download-notice {
+  margin:8px 0 14px;
+  padding:9px 11px;
+  border:1px solid #eadfbd;
+  border-radius:8px;
+  background:#fffbea;
+  color:#6f5b20;
+  font-size:12px;
+  line-height:1.45;
+}
+
+#login-section {
+  text-align: center;
+  padding: 32px 16px;
+}
+#login-btn {
+  padding: 12px 20px;
+  border: none;
+  border-radius: 10px;
+  background: var(--red);
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+}
+#qrcode-img { display: block; margin: 16px auto; max-width: 240px; }
+/* [hidden] 가드: id 선택자(display:block)가 UA [hidden]을 이겨서 QR 버튼 누르기 전에
+   깨진 이미지로 노출되던 결함 방어. JS 는 .hidden 속성 토글로 표시/숨김. */
+#qrcode-img[hidden] { display: none; }
+#login-status { color: var(--muted); }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal.hidden { display: none; }
+.modal-body {
+  background: #000;
+  border-radius: 12px;
+  padding: 12px;
+  max-width: 90vw;
+  position: relative;
+}
+#video-player { max-width: 80vw; max-height: 75vh; display: block; background: #000; }
+.modal-close {
+  position: absolute;
+  top: -14px; right: -14px;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: #fff;
+  font-size: 18px;
+  cursor: pointer;
+}
+#copy-url-btn {
+  margin-top: 10px;
+  padding: 8px 14px;
+  border: 1px solid #fff;
+  background: transparent;
+  color: #fff;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.hidden { display: none !important; }
+
+/* === 통합 검색 추가 스타일 === */
+.settings-link { display:inline-block; margin-top:6px; font-size:13px; color:#4a6cf7; text-decoration:none; }
+.settings-card { border:1px solid var(--border,#e5e5e5); border-radius:10px; padding:18px 20px; max-width:560px; }
+.settings-card h2 { margin:0 0 6px; font-size:16px; }
+.muted { color:#777; font-size:13px; margin:0 0 12px; }
+.modal-actions { display:flex; gap:10px; align-items:center; margin-top:10px; }
+.original-link { font-size:14px; color:#4a6cf7; text-decoration:none; }
+#search-section form { display:flex; flex-direction:column; gap:12px; }
+.chips { border:1px solid var(--border,#e5e5e5); border-radius:8px; padding:10px 12px; }
+.chips legend { font-size:13px; color:#666; padding:0 4px; }
+.chips label { margin-right:16px; cursor:pointer; }
+.chips button[aria-pressed="true"] { background:#4a6cf7; color:#fff; }
+.side-pending { color:#9a6700; }
+.sort { display:flex; align-items:center; gap:8px; font-size:14px; }
+.sort select { padding:6px 8px; border-radius:6px; border:1px solid var(--border,#ccc); }
+.filters summary { cursor:pointer; font-size:14px; color:#444; padding:6px 0; }
+.filter-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-top:10px; }
+.filter-grid label { display:flex; flex-direction:column; font-size:12px; gap:4px; color:#555; }
+.filter-grid input { padding:6px 8px; border:1px solid var(--border,#ccc); border-radius:6px; }
+.filter-grid input:disabled { background:#f3f3f3; color:#aaa; }
+.filter-grid label.check { flex-direction:row; align-items:center; gap:6px; }
+#search-btn { align-self:flex-start; padding:10px 24px; font-size:15px; }
+.side-status { list-style:none; padding:0; margin:8px 0; display:flex; gap:16px; flex-wrap:wrap; font-size:13px; }
+.side-ok b { color:#1a7f37; }
+.side-unavailable b { color:#b35900; }
+.badge-platform { position:absolute; top:8px; left:8px; background:rgba(0,0,0,.65); color:#fff; font-size:11px; padding:2px 6px; border-radius:4px; }
+#more-btn { display:block; margin:16px auto; padding:8px 28px; }
+
+/* === Task 5: 키워드 발견 — URL 분석 섹션 + 후보 칩 === */
+#entry-mode-toggle { align-self:flex-start; padding:6px 12px; font-size:13px; background:#fff; color:#4a6cf7; border:1px solid #cdd8ff; }
+#entry-mode-toggle[aria-expanded="true"] { background:#4a6cf7; color:#fff; border-color:#4a6cf7; }
+#url-entry { display:flex; flex-direction:column; gap:8px; }
+#url-entry.hidden { display:none !important; } /* show/hide helper 호환 */
+#url-entry textarea { width:100%; padding:10px 12px; border:1px solid var(--border,#ccc); border-radius:8px; font:inherit; font-size:14px; resize:vertical; }
+#analyze-btn { align-self:flex-start; padding:8px 16px; font-size:14px; }
+.candidate-chips { display:flex; flex-wrap:wrap; gap:8px; padding:0; margin:0; }
+.candidate-chips:empty { display:none; } /* 후보 없을 때 레이아웃 점유 방지 */
+.cand-chip {
+  appearance:none;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 12px;
+  border:1px solid var(--border,#e5e5e5);
+  border-radius:999px; /* pill */
+  background:#fff;
+  color:#222;
+  font:inherit;
+  font-size:13px;
+  cursor:pointer;
+  max-width:100%;
+  transition: border-color .15s, background .15s;
+}
+.cand-chip:hover { border-color:#4a6cf7; background:#f4f7ff; }
+.cand-chip-kw { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px; }
+.cand-chip-basis { font-size:11px; color:#888; border-left:1px solid var(--border,#eee); padding-left:6px; }
+@media (max-width: 425px) {
+  .candidate-chips { gap:6px; }
+  .cand-chip-kw { max-width:160px; }
+}

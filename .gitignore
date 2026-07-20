@@ -42,5 +42,7 @@ test_*.sh
 
 # Cookies files (contain sensitive login information)
 cookies.json
+# LocalStorage secrets (XHS auth tokens)
+local_storage.json
 docker/data/
 docker/images/
