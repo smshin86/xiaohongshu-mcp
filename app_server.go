@@ -94,5 +94,10 @@ func (s *AppServer) Start(port string) error {
 		logrus.Infof("服务器已优雅关闭")
 	}
 
+	// live 세션 브라우저 정리(QR 로그인 세션 유지 중이면 종료).
+	if s.xiaohongshuService != nil {
+		_ = s.xiaohongshuService.Close()
+	}
+
 	return nil
 }

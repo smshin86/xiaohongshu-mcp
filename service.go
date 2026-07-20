@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -16,15 +17,53 @@ import (
 	"github.com/xpzouying/xiaohongshu-mcp/localstorage"
 	"github.com/xpzouying/xiaohongshu-mcp/pkg/downloader"
 	"github.com/xpzouying/xiaohongshu-mcp/pkg/xhsutil"
+	"github.com/xpzouying/xiaohongshu-mcp/xhssession"
 	"github.com/xpzouying/xiaohongshu-mcp/xiaohongshu"
 )
 
-// XiaohongshuService 小红书业务服务
-type XiaohongshuService struct{}
+// sessionRunner: 세션 매니저 사용 메서드만 노출(테스트용 fake 교체 가능).
+// *xhssession.Manager 가 이 인터페이스를 충족한다.
+type sessionRunner interface {
+	LoggedIn() bool
+	StartLogin(ctx context.Context) (string, bool, error)
+	WithPage(ctx context.Context, fn func(*rod.Page) error) error
+	Logout() error
+	Close() error
+}
 
-// NewXiaohongshuService 创建小红书服务实例
+// XiaohongshuService 小红书业务服务.
+// session 은 QR 로그인한 동일 Browser/Page 를 유지·재사용하는 세션 매니저
+// (direction #2). 로그인 후 닫지 않고 CheckLoginStatus/SearchFeeds 가 재사용한다.
+// cookie/localStorage 파일은 앱 재시작 후 세션 복원용 fallback 으로 유지.
+type XiaohongshuService struct {
+	session sessionRunner
+}
+
+// NewXiaohongshuService 创建小红书服务实例.
+// onConfirm 콜백으로 로그인 확정 시 cookie/localStorage 를 영속화(restart 복원용).
 func NewXiaohongshuService() *XiaohongshuService {
-	return &XiaohongshuService{}
+	onConfirm := func(page *rod.Page) {
+		if er := saveCookies(page); er != nil {
+			logrus.Errorf("failed to save cookies: %v", er)
+		}
+		if er := saveXhsLocalStorage(page); er != nil {
+			logrus.Warnf("failed to save local storage: %v", er)
+		}
+	}
+	return &XiaohongshuService{
+		session: xhssession.NewManager(
+			func() xhssession.BrowserSession { return newXhsBrowserSession() },
+			xhssession.WithOnConfirm(onConfirm),
+		),
+	}
+}
+
+// Close: 앱 종료 시 live 세션 브라우저를 정리한다.
+func (s *XiaohongshuService) Close() error {
+	if s.session != nil {
+		return s.session.Close()
+	}
+	return nil
 }
 
 // PublishRequest 发布请求
@@ -94,8 +133,11 @@ type UserProfileResponse struct {
 	Feeds         []xiaohongshu.Feed             `json:"feeds"`
 }
 
-// DeleteCookies 删除 cookies 与 localStorage 文件，用于登录完全重置
+// DeleteCookies: live 세션 종료 + cookie/localStorage 파일 삭제로 완전 초기화.
 func (s *XiaohongshuService) DeleteCookies(ctx context.Context) error {
+	if s.session != nil {
+		_ = s.session.Logout()
+	}
 	cookiePath := cookies.GetCookiesFilePath()
 	cookieLoader := cookies.NewLoadCookie(cookiePath)
 	if err := cookieLoader.DeleteCookies(); err != nil {
@@ -105,11 +147,18 @@ func (s *XiaohongshuService) DeleteCookies(ctx context.Context) error {
 	return localstorage.NewFileStorer(localstorage.GetFilePath()).Delete()
 }
 
-// CheckLoginStatus 检查登录状态
+// CheckLoginStatus: live 세션 우선, 없으면 restart fallback(cookie/localStorage).
+// live 세션의 LoggedIn 은 로그인 확정 시점에 loggedIn+식별+안정화로 robust 판정된 값.
 func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatusResponse, error) {
-	// fast path: 저장된 쿠키가 없으면 무조건 미로그인. 브라우저(go-rod) 기동 자체를 건너뛰어
-	// MustNavigate panic/crash 경로를 원천 차단한다(capabilities 호출 시마다 매번 브라우저를
-	// 띄우던 비용과 취약성도 함께 제거).
+	if s.session.LoggedIn() {
+		return &LoginStatusResponse{IsLoggedIn: true, Username: configs.Username}, nil
+	}
+	return s.checkLoginStatusFallback(ctx)
+}
+
+// checkLoginStatusFallback: live 세션이 없을 때(앱 재시작 등) 파일 기반 복원 시도.
+func (s *XiaohongshuService) checkLoginStatusFallback(ctx context.Context) (*LoginStatusResponse, error) {
+	// fast path: 저장된 쿠키가 없으면 무조건 미로그인. 브라우저 기동 생략(crash 회피).
 	if !xhsHasSavedCookies() {
 		return &LoginStatusResponse{IsLoggedIn: false, Username: configs.Username}, nil
 	}
@@ -126,18 +175,11 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 	}
 
 	loginAction := xiaohongshu.NewLogin(page)
-
 	isLoggedIn, err := loginAction.CheckLoginStatus(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	response := &LoginStatusResponse{
-		IsLoggedIn: isLoggedIn,
-		Username:   configs.Username,
-	}
-
-	return response, nil
+	return &LoginStatusResponse{IsLoggedIn: isLoggedIn, Username: configs.Username}, nil
 }
 
 // savedCookiesAt: 주어진 경로에 0보다 큰 크기의 쿠키 파일이 존재하면 true.
@@ -155,46 +197,15 @@ func xhsHasSavedCookies() bool {
 	return savedCookiesAt(cookies.GetCookiesFilePath())
 }
 
-// GetLoginQrcode 获取登录的扫码二维码
+// GetLoginQrcode: 세션 매니저로 새 QR 세션 시작. 동일 Browser/Page 를 유지해
+// 로그인 후에도 닫지 않는다(direction #2). QR 만료/재시도 시 반복 호출하면
+// 기존 세션을 안전하게 교체한다.
 func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context) (*LoginQrcodeResponse, error) {
-	b := newBrowser()
-	page := b.NewPage()
-
-	deferFunc := func() {
-		_ = page.Close()
-		b.Close()
-	}
-
-	loginAction := xiaohongshu.NewLogin(page)
-
-	img, loggedIn, err := loginAction.FetchQrcodeImage(ctx)
-	if err != nil || loggedIn {
-		defer deferFunc()
-	}
+	img, loggedIn, err := s.session.StartLogin(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	timeout := 4 * time.Minute
-
-	if !loggedIn {
-		go func() {
-			ctxTimeout, cancel := context.WithTimeout(context.Background(), timeout)
-			defer cancel()
-			defer deferFunc()
-
-			if loginAction.WaitForLogin(ctxTimeout) {
-				if er := saveCookies(page); er != nil {
-					logrus.Errorf("failed to save cookies: %v", er)
-				}
-				// 쿠키와 함께 XHS localStorage 도 영속화(세션 복원용).
-				if er := saveXhsLocalStorage(page); er != nil {
-					logrus.Warnf("failed to save local storage: %v", er)
-				}
-			}
-		}()
-	}
-
 	return &LoginQrcodeResponse{
 		Timeout: func() string {
 			if loggedIn {
@@ -405,7 +416,31 @@ func (s *XiaohongshuService) ListFeeds(ctx context.Context) (*FeedsListResponse,
 	return response, nil
 }
 
+// SearchFeeds: live 인증 세션 우선 재사용(direction #2). 세션이 없으면
+// restart fallback(cookie/localStorage 복원) 시도. live 페이지에서 검색 에러는
+// 그대로 반환하고, ErrNoSession 일 때만 fallback 한다.
 func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, filters ...xiaohongshu.FilterOption) (*FeedsListResponse, error) {
+	var feeds []xiaohongshu.Feed
+	err := s.session.WithPage(ctx, func(page *rod.Page) error {
+		action := xiaohongshu.NewSearchAction(page)
+		f, e := action.Search(ctx, keyword, filters...)
+		if e != nil {
+			return e
+		}
+		feeds = f
+		return nil
+	})
+	if err == nil {
+		return &FeedsListResponse{Feeds: feeds, Count: len(feeds)}, nil
+	}
+	if !errors.Is(err, xhssession.ErrNoSession) {
+		return nil, err
+	}
+	return s.searchFeedsFallback(ctx, keyword, filters...)
+}
+
+// searchFeedsFallback: live 세션이 없을 때(앱 재시작 등) 임시 브라우저 + localStorage 복원.
+func (s *XiaohongshuService) searchFeedsFallback(ctx context.Context, keyword string, filters ...xiaohongshu.FilterOption) (*FeedsListResponse, error) {
 	b := newBrowser()
 	defer b.Close()
 
@@ -418,18 +453,11 @@ func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, fi
 	}
 
 	action := xiaohongshu.NewSearchAction(page)
-
 	feeds, err := action.Search(ctx, keyword, filters...)
 	if err != nil {
 		return nil, err
 	}
-
-	response := &FeedsListResponse{
-		Feeds: feeds,
-		Count: len(feeds),
-	}
-
-	return response, nil
+	return &FeedsListResponse{Feeds: feeds, Count: len(feeds)}, nil
 }
 
 // GetFeedDetail 获取Feed详情
