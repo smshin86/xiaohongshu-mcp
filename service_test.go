@@ -10,6 +10,7 @@ import (
 	"github.com/go-rod/rod"
 	"github.com/stretchr/testify/require"
 	xhserrors "github.com/xpzouying/xiaohongshu-mcp/errors"
+	"github.com/xpzouying/xiaohongshu-mcp/xhssession"
 )
 
 // TestSavedCookiesAt: 쿠키 파일 존재/크기/디렉토리 여부로 fast path 진입 조건을 결정한다.
@@ -36,6 +37,7 @@ func TestSavedCookiesAt(t *testing.T) {
 
 // fakeSession: sessionRunner 테스트용 가짜. 브라우저/rod 없이 dispatch 만 검증.
 type fakeSession struct {
+	state        xhssession.State
 	loggedIn     bool
 	startImg     string
 	startAlready bool
@@ -45,7 +47,8 @@ type fakeSession struct {
 	closeCalls   int
 }
 
-func (f *fakeSession) LoggedIn() bool { return f.loggedIn }
+func (f *fakeSession) State() xhssession.State { return f.state }
+func (f *fakeSession) LoggedIn() bool          { return f.loggedIn }
 func (f *fakeSession) StartLogin(ctx context.Context) (string, bool, error) {
 	return f.startImg, f.startAlready, f.startErr
 }
@@ -54,6 +57,27 @@ func (f *fakeSession) WithPage(ctx context.Context, fn func(*rod.Page) error) er
 }
 func (f *fakeSession) Logout() error { f.logoutCalls++; return nil }
 func (f *fakeSession) Close() error  { f.closeCalls++; return nil }
+
+// TestCheckLoginStatusQRPendingSkipsFallback: settings UI 가 QR 대기 중 status 를
+// 반복 확인해도 저장 인증 fallback 브라우저를 새로 띄우지 않는다. 과거에는
+// 2초마다 새 Chrome 창이 생성되던 운영 회귀다.
+func TestCheckLoginStatusQRPendingSkipsFallback(t *testing.T) {
+	fallbackCalls := 0
+	s := &XiaohongshuService{
+		session: &fakeSession{state: xhssession.StateQRPending},
+		fallbackStatus: func(context.Context) (*LoginStatusResponse, error) {
+			fallbackCalls++
+			return &LoginStatusResponse{IsLoggedIn: true}, nil
+		},
+	}
+
+	for i := 0; i < 3; i++ {
+		resp, err := s.CheckLoginStatus(context.Background())
+		require.NoError(t, err)
+		require.False(t, resp.IsLoggedIn)
+	}
+	require.Equal(t, 0, fallbackCalls, "QR 대기 중 fallback 브라우저 생성 금지")
+}
 
 // TestCheckLoginStatusLiveAuthed: live 세션(LoggedIn=true) 에서 liveAuth 재검증이
 // true 면 IsLoggedIn=true. 캐시 bool 만 보지 않고 live 페이지로 확인하는 경로.

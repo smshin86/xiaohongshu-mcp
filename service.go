@@ -25,6 +25,7 @@ import (
 // sessionRunner: 세션 매니저 사용 메서드만 노출(테스트용 fake 교체 가능).
 // *xhssession.Manager 가 이 인터페이스를 충족한다.
 type sessionRunner interface {
+	State() xhssession.State
 	LoggedIn() bool
 	StartLogin(ctx context.Context) (string, bool, error)
 	WithPage(ctx context.Context, fn func(*rod.Page) error) error
@@ -44,6 +45,9 @@ type XiaohongshuService struct {
 	// deleteAuthNow: purgeAuthState 의 파일 정리(기본 nil → 실제 파일 삭제).
 	// 단위 테스트가 no-op/counter stub 을 주입해 실제 저장 파일을 보호한다.
 	deleteAuthNow func() error
+	// fallbackStatus: 저장 인증 복원 경로의 테스트 seam. 기본 nil 이면 실제
+	// checkLoginStatusFallback 을 호출한다.
+	fallbackStatus func(context.Context) (*LoginStatusResponse, error)
 }
 
 // NewXiaohongshuService 创建小红书服务实例.
@@ -196,7 +200,18 @@ func (s *XiaohongshuService) purgeAuthState() {
 // restart fallback(cookie/localStorage 복원) 한다.
 func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatusResponse, error) {
 	if !s.session.LoggedIn() {
-		return s.checkLoginStatusFallback(ctx)
+		switch s.session.State() {
+		case xhssession.StateQRPending:
+			// QR 대기 중에는 StartLogin 이 만든 live 브라우저가 이미 있다.
+			// settings UI 의 status polling 때마다 파일 복원용 브라우저를 새로
+			// 띄우면 Chrome 창이 반복 생성되므로 즉시 false 만 반환한다.
+			return &LoginStatusResponse{IsLoggedIn: false, Username: configs.Username}, nil
+		case xhssession.StateLoggedIn:
+			// LoggedIn 확인 직후 QR 확인 goroutine 이 로그인 전이를 완료한 경우다.
+			// fallback 대신 아래 live auth 재검증 경로를 사용한다.
+		default:
+			return s.loginStatusFallbackProbe(ctx)
+		}
 	}
 
 	authed, err := s.liveAuthProbe(ctx)
@@ -213,6 +228,13 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 		// 일시적 에러(네트워크/ctx) 는 단절 확정이 아니므로 세션 유지 + false.
 		return &LoginStatusResponse{IsLoggedIn: false, Username: configs.Username}, nil
 	}
+}
+
+func (s *XiaohongshuService) loginStatusFallbackProbe(ctx context.Context) (*LoginStatusResponse, error) {
+	if s.fallbackStatus != nil {
+		return s.fallbackStatus(ctx)
+	}
+	return s.checkLoginStatusFallback(ctx)
 }
 
 // checkLiveAuth: live 세션 페이지에서 robust auth(IsAuthenticated) 재검증.
