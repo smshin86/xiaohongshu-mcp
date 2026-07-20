@@ -180,10 +180,47 @@ type SearchAction struct {
 	page *rod.Page
 }
 
+// 검색 페이지 로드 후 인증/feeds 준비를 기다리는 bounded 상한들.
+// 예전 WaitStable(time.Second) 은 로그인 프롬프트가 뜬 불안정 페이지에서
+// page.Timeout 전체(60s)를 채워 "응답 시간 초과" 로 위장했던 원인.
+// 아래 상한들은 명시적으로 짧게 잡아 인증 단절을 빠르게(fast-fail) 감지한다.
+const (
+	searchPageTimeout       = 60 * time.Second // 전체 페이지 안전망(마지막 상한)
+	searchAuthReadyTimeout  = 8 * time.Second  // __INITIAL_STATE__.user 가 읽힐 때까지
+	searchAuthCheckTimeout  = 5 * time.Second  // robust auth 판정 Eval 상한
+	searchFeedsReadyTimeout = 10 * time.Second // search 상태가 읽힐 때까지
+)
+
 func NewSearchAction(page *rod.Page) *SearchAction {
-	pp := page.Timeout(60 * time.Second)
+	pp := page.Timeout(searchPageTimeout)
 
 	return &SearchAction{page: pp}
+}
+
+// decideAuthLost: 검색 페이지 인증 단절 판정(순수, 페이지 없이 테스트 가능).
+// user-state 대기 실패 OR robust auth(false/eval 실패) 중 하나라도 걸리면 ErrAuthLost.
+// 이 결정이 60s timeout 대신 빠른 fast-fail 을 담당한다.
+func decideAuthLost(userStateWaitErr error, authed bool, authErr error) bool {
+	if userStateWaitErr != nil {
+		return true
+	}
+	if authErr != nil || !authed {
+		return true
+	}
+	return false
+}
+
+// ensureSearchAuthed: Navigate+WaitLoad 직후 bounded 로 인증 단절을 감지한다.
+// XHS 가 검색 페이지 이동 시 세션을 무효화(로그인 UI/robust auth false)하면
+// 즉시 ErrAuthLost 반환 — broad WaitStable(60s blocker) 을 대체.
+func ensureSearchAuthed(page *rod.Page) error {
+	userStateWaitErr := page.Timeout(searchAuthReadyTimeout).Wait(
+		rod.Eval(`() => window.__INITIAL_STATE__ && window.__INITIAL_STATE__.user !== undefined`))
+	authed, authErr := authCheck(page.Timeout(searchAuthCheckTimeout))
+	if decideAuthLost(userStateWaitErr, authed, authErr) {
+		return errors.ErrAuthLost
+	}
+	return nil
 }
 
 func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...FilterOption) ([]Feed, error) {
@@ -204,11 +241,16 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	if err := page.WaitLoad(); err != nil {
 		return nil, fmt.Errorf("wait search load failed: %w", err)
 	}
-	if err := page.WaitStable(time.Second); err != nil {
-		return nil, fmt.Errorf("wait search stable failed: %w", err)
+	// Navigate+WaitLoad 직후의 broad WaitStable(60s blocker 원인) 제거.
+	// 대신 bounded 로 인증 단절을 fast-fail: 검색 페이지 이동 시 XHS 가 세션을
+	// 무효화하면 로그인 UI 가 뜨고 robust auth 가 false → 즉시 ErrAuthLost.
+	if err := ensureSearchAuthed(page); err != nil {
+		return nil, err
 	}
-	if err := page.Wait(rod.Eval(`() => window.__INITIAL_STATE__ !== undefined`)); err != nil {
-		return nil, fmt.Errorf("wait initial state failed: %w", err)
+	// feeds 준비 대기(bounded): search 상태가 읽힐 때까지 짧게.
+	if err := page.Timeout(searchFeedsReadyTimeout).Wait(
+		rod.Eval(`() => window.__INITIAL_STATE__ && window.__INITIAL_STATE__.search !== undefined`)); err != nil {
+		return nil, fmt.Errorf("wait search state failed: %w", err)
 	}
 
 	// 仅有实际筛选动作时才进入筛选流程

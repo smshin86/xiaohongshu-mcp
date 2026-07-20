@@ -14,6 +14,7 @@ import (
 	"github.com/xpzouying/xiaohongshu-mcp/browser"
 	"github.com/xpzouying/xiaohongshu-mcp/configs"
 	"github.com/xpzouying/xiaohongshu-mcp/cookies"
+	xhserrors "github.com/xpzouying/xiaohongshu-mcp/errors"
 	"github.com/xpzouying/xiaohongshu-mcp/localstorage"
 	"github.com/xpzouying/xiaohongshu-mcp/pkg/downloader"
 	"github.com/xpzouying/xiaohongshu-mcp/pkg/xhsutil"
@@ -37,6 +38,12 @@ type sessionRunner interface {
 // cookie/localStorage 파일은 앱 재시작 후 세션 복원용 fallback 으로 유지.
 type XiaohongshuService struct {
 	session sessionRunner
+	// liveAuth: live 세션 페이지에서 robust auth 를 재검증(캐시 bool 만 신뢰 금지).
+	// NewXiaohongshuService 가 checkLiveAuth 로 초기화; 단위 테스트가 stub 주입.
+	liveAuth func(context.Context) (bool, error)
+	// deleteAuthNow: purgeAuthState 의 파일 정리(기본 nil → 실제 파일 삭제).
+	// 단위 테스트가 no-op/counter stub 을 주입해 실제 저장 파일을 보호한다.
+	deleteAuthNow func() error
 }
 
 // NewXiaohongshuService 创建小红书服务实例.
@@ -50,12 +57,23 @@ func NewXiaohongshuService() *XiaohongshuService {
 			logrus.Warnf("failed to save local storage: %v", er)
 		}
 	}
-	return &XiaohongshuService{
+	svc := &XiaohongshuService{
 		session: xhssession.NewManager(
 			func() xhssession.BrowserSession { return newXhsBrowserSession() },
 			xhssession.WithOnConfirm(onConfirm),
 		),
 	}
+	svc.liveAuth = svc.checkLiveAuth
+	return svc
+}
+
+// liveAuthProbe: liveAuth stub 이 주입됐으면 그것을, 아니면 실제 checkLiveAuth 를
+// 쓴다. 필드가 미설정인 경로(단위 테스트 등)의 nil deref 도 막는다.
+func (s *XiaohongshuService) liveAuthProbe(ctx context.Context) (bool, error) {
+	if s.liveAuth != nil {
+		return s.liveAuth(ctx)
+	}
+	return s.checkLiveAuth(ctx)
 }
 
 // Close: 앱 종료 시 live 세션 브라우저를 정리한다.
@@ -138,22 +156,76 @@ func (s *XiaohongshuService) DeleteCookies(ctx context.Context) error {
 	if s.session != nil {
 		_ = s.session.Logout()
 	}
-	cookiePath := cookies.GetCookiesFilePath()
-	cookieLoader := cookies.NewLoadCookie(cookiePath)
-	if err := cookieLoader.DeleteCookies(); err != nil {
+	return deleteAuthFiles(cookies.GetCookiesFilePath(), localstorage.GetFilePath())
+}
+
+// deleteAuthFiles: cookie/localStorage 파일 삭제(명시적 path — 단위 테스트 안전).
+// GetCookiesFilePath() 는 /tmp/cookies.json 존재 시 COOKIES_PATH 를 무시하므로
+// 테스트는 임시 path 를 직접 넘겨 실제 저장 파일에 손대지 않는다.
+func deleteAuthFiles(cookiePath, lsPath string) error {
+	if err := cookies.NewLoadCookie(cookiePath).DeleteCookies(); err != nil {
 		return err
 	}
 	// localStorage 도 함께 삭제(세션 완전 초기화).
-	return localstorage.NewFileStorer(localstorage.GetFilePath()).Delete()
+	return localstorage.NewFileStorer(lsPath).Delete()
 }
 
-// CheckLoginStatus: live 세션 우선, 없으면 restart fallback(cookie/localStorage).
-// live 세션의 LoggedIn 은 로그인 확정 시점에 loggedIn+식별+안정화로 robust 판정된 값.
-func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatusResponse, error) {
-	if s.session.LoggedIn() {
-		return &LoginStatusResponse{IsLoggedIn: true, Username: configs.Username}, nil
+// purgeAuthState: 인증 단절(ErrAuthLost) 시 live 세션 + 저장 인증 파일을 모두 정리.
+// capabilities(Available) 가 즉시 available=false 가 되도록 한다.
+// 정리 실패는 검색 실패를 가리키면 안 되므로 로그만 남기고 무시한다.
+// deleteAuthNow 가 주입(테스트)됐으면 그것을 쓰고, 아니면 실제 파일을 지운다.
+func (s *XiaohongshuService) purgeAuthState() {
+	if s.session != nil {
+		_ = s.session.Logout()
 	}
-	return s.checkLoginStatusFallback(ctx)
+	fn := s.deleteAuthNow
+	if fn == nil {
+		fn = func() error {
+			return deleteAuthFiles(cookies.GetCookiesFilePath(), localstorage.GetFilePath())
+		}
+	}
+	if err := fn(); err != nil {
+		logrus.Warnf("failed to purge auth files on auth loss: %v", err)
+	}
+}
+
+// CheckLoginStatus: live 세션이 있으면 같은 페이지에서 robust auth 를 재검증한다.
+// Manager.LoggedIn 은 로그인 확정 시점의 캐시 bool 이라, 검색/유휴 중 XHS 가 세션을
+// 무효화하면 stale true 가 된다. 그래서 캐시만 신뢰하지 않고 live 페이지로 재확인하고,
+// 미인증이 확인되면 세션을 invalidate/Close 한다(잘못된 true 차단). live 세션이 없으면
+// restart fallback(cookie/localStorage 복원) 한다.
+func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatusResponse, error) {
+	if !s.session.LoggedIn() {
+		return s.checkLoginStatusFallback(ctx)
+	}
+
+	authed, err := s.liveAuthProbe(ctx)
+	switch {
+	case err == nil && authed:
+		return &LoginStatusResponse{IsLoggedIn: true, Username: configs.Username}, nil
+	case err == nil && !authed:
+		// live 페이지가 미인증(세션 단절) 확인 → invalidate/Close.
+		if s.session != nil {
+			_ = s.session.Logout()
+		}
+		return &LoginStatusResponse{IsLoggedIn: false, Username: configs.Username}, nil
+	default:
+		// 일시적 에러(네트워크/ctx) 는 단절 확정이 아니므로 세션 유지 + false.
+		return &LoginStatusResponse{IsLoggedIn: false, Username: configs.Username}, nil
+	}
+}
+
+// checkLiveAuth: live 세션 페이지에서 robust auth(IsAuthenticated) 재검증.
+// Manager.WithPage 가 세션 접근을 직렬화하며, fn 안에서 manager 재진입이 없어
+// lock deadlock 도 없다. WithPage 가 ErrNoSession(세션 없음/만료) 이면 (false, err).
+func (s *XiaohongshuService) checkLiveAuth(ctx context.Context) (bool, error) {
+	var authed bool
+	err := s.session.WithPage(ctx, func(page *rod.Page) error {
+		ok, e := xiaohongshu.NewLogin(page).CheckLoginStatus(ctx)
+		authed = ok
+		return e
+	})
+	return authed, err
 }
 
 // checkLoginStatusFallback: live 세션이 없을 때(앱 재시작 등) 파일 기반 복원 시도.
@@ -432,6 +504,13 @@ func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, fi
 	})
 	if err == nil {
 		return &FeedsListResponse{Feeds: feeds, Count: len(feeds)}, nil
+	}
+	// 인증 단절(ErrAuthLost): live 세션 + 저장 cookie/localStorage 를 정리해
+	// capabilities 가 즉시 available=false 가 되게 한다. generic fallback 재시도 금지
+	// (무효 세션으로는 어차피 실패하므로, 60s timeout 재발도 막는다).
+	if errors.Is(err, xhserrors.ErrAuthLost) {
+		s.purgeAuthState()
+		return nil, err
 	}
 	if !errors.Is(err, xhssession.ErrNoSession) {
 		return nil, err

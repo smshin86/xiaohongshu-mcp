@@ -3,6 +3,8 @@ package search
 import (
 	"context"
 	"errors"
+
+	xhserrors "github.com/xpzouying/xiaohongshu-mcp/errors"
 )
 
 // Sentinel 에러: 사이드카/어댑터 실패 유형. 원문 err.Error() 대신 이 들로 분기해 고정 메시지 매핑.
@@ -22,6 +24,9 @@ func SideErrorMessage(name string, err error) string {
 		return "응답 시간 초과"
 	case errors.Is(err, context.Canceled):
 		return "요청이 취소되었습니다"
+	case errors.Is(err, xhserrors.ErrAuthLost):
+		// XHS 위험제어로 세션이 무효화된 경우(검색 페이지 이동 등). 재로그인 필요 안내.
+		return "로그인 세션 해제/재로그인 필요"
 	case errors.Is(err, ErrUnavailable):
 		switch name {
 		case "xiaohongshu":
