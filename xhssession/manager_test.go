@@ -21,6 +21,7 @@ type fakeBS struct {
 	confirmOk      bool
 	confirmErr     error
 	confirmDelay   time.Duration
+	startDelay     time.Duration
 	panicOnStart   bool
 	panicOnFetch   bool
 	panicOnConfirm int
@@ -35,6 +36,15 @@ type fakeBS struct {
 func (f *fakeBS) Start(ctx context.Context) error {
 	if f.panicOnStart {
 		panic("fake start panic")
+	}
+	// Start 단계의 지연: StartLogin 들이 Start/Fetch 중 직렬화 없이 겹치는
+	// 경합(중복 설치 / Logout 끼어듦)을 재현하기 위함. ctx 취소 시 즉시 반환.
+	if f.startDelay > 0 {
+		select {
+		case <-time.After(f.startDelay):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	if f.startCheckCtx && ctx.Err() != nil {
 		return ctx.Err()
@@ -353,4 +363,105 @@ func TestOnConfirmPanicRecovered(t *testing.T) {
 	require.Eventually(t, func() bool { return bs.closeCount() >= 1 }, time.Second, 5*time.Millisecond)
 	require.False(t, m.LoggedIn(), "session must be invalidated after onConfirm panic")
 	require.Equal(t, StateIdle, m.State())
+}
+
+// TestStartLoginNewPanic: newBS(팩토리) 패닉 시 recover 가 잡아 error 로 반환한다.
+// recover 가 factory 호출보다 먼저 설치돼 있지 않으면 프로세스가 죽는다(3차 리뷰 #1 회귀).
+func TestStartLoginNewPanic(t *testing.T) {
+	m := newTestManager(t, func() BrowserSession { panic("factory boom") }, nil)
+
+	_, _, err := m.StartLogin(context.Background())
+	require.Error(t, err)
+	require.False(t, m.LoggedIn())
+	require.Equal(t, StateIdle, m.State())
+}
+
+// TestConcurrentStartLoginSingleSession: 지연된 동시 StartLogin 경합에서
+// 오직 유효한 한 세션만 설치되고 나머지는 모두 Close 되야 한다(3차 리뷰 #2 회귀).
+// -race 로 데이터레이스 없음을 함께 검증한다.
+func TestConcurrentStartLoginSingleSession(t *testing.T) {
+	var (
+		allBS []*fakeBS
+		bsMu  sync.Mutex
+	)
+	m := NewManager(func() BrowserSession {
+		bs := &fakeBS{fetchImg: "qr", confirmOk: true, startDelay: 10 * time.Millisecond}
+		bsMu.Lock()
+		allBS = append(allBS, bs)
+		bsMu.Unlock()
+		return bs
+	},
+		WithClock((&fakeClock{t: time.Unix(1700000000, 0)}).now),
+		WithPollEvery(5*time.Millisecond),
+		WithLoginWait(time.Minute),
+		WithTTL(time.Minute),
+	)
+
+	const n = 5
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// 진입 시점을 어긋나게 해 직렬화/세대 검증을 자극.
+			time.Sleep(time.Duration(i) * 20 * time.Millisecond)
+			_, _, _ = m.StartLogin(context.Background())
+		}(i)
+	}
+	wg.Wait()
+
+	// 최종 한 세션만 LoggedIn 으로 살아남는다.
+	require.Eventually(t, func() bool { return m.State() == StateLoggedIn }, 2*time.Second, 5*time.Millisecond)
+
+	bsMu.Lock()
+	defer bsMu.Unlock()
+	require.Len(t, allBS, n, "each StartLogin must create one session")
+	alive := 0
+	for _, b := range allBS {
+		if b.closeCount() == 0 {
+			alive++
+		}
+	}
+	require.Equal(t, 1, alive, "exactly one session must survive; the rest must be closed")
+}
+
+// TestStartLoginDuringLogout: StartLogin 이 Start(지연) 단계에 있을 때 Logout 이
+// 끼어들면 늦게 도착한 QR 세션은 설치되지 않고 반드시 Close 된다(3차 리뷰 #2 회귀).
+// 상태는 Idle 로 귀결되고 생성된 모든 세션이 닫힌다(누수 없음).
+func TestStartLoginDuringLogout(t *testing.T) {
+	var (
+		allBS []*fakeBS
+		bsMu  sync.Mutex
+	)
+	m := NewManager(func() BrowserSession {
+		bs := &fakeBS{fetchImg: "qr", confirmOk: false, confirmDelay: time.Hour, startDelay: 80 * time.Millisecond}
+		bsMu.Lock()
+		allBS = append(allBS, bs)
+		bsMu.Unlock()
+		return bs
+	},
+		WithClock((&fakeClock{t: time.Unix(1700000000, 0)}).now),
+		WithPollEvery(5*time.Millisecond),
+		WithLoginWait(time.Hour),
+		WithTTL(time.Minute),
+	)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = m.StartLogin(context.Background())
+	}()
+
+	// StartLogin 이 Start(지연) 중일 때 Logout 이 세대를 무효화한다.
+	time.Sleep(20 * time.Millisecond)
+	require.NoError(t, m.Logout())
+	<-done
+
+	require.Equal(t, StateIdle, m.State())
+	bsMu.Lock()
+	defer bsMu.Unlock()
+	require.NotEmpty(t, allBS, "a session must have been created")
+	for _, b := range allBS {
+		require.GreaterOrEqual(t, b.closeCount(), 1, "every created session must be closed (no leak)")
+	}
 }

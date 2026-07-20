@@ -38,7 +38,8 @@ type BrowserSession interface {
 
 // Manager: 단일 live 세션을 보유하며 동시성 안전하게 재사용시킨다.
 type Manager struct {
-	mu          sync.Mutex
+	mu          sync.Mutex // state/bs/page/confirmedAt/loginCancel/gen 보호
+	startMu     sync.Mutex // StartLogin 의 Start/Fetch 단계 직렬화(중복 설치/누수 방지)
 	state       State
 	bs          BrowserSession
 	page        *rod.Page
@@ -109,9 +110,16 @@ func (m *Manager) LoggedIn() bool {
 // StartLogin: 기존 세션을 교체하고 새 QR 세션을 시작한다. QR 만료/재시도 시 반복 호출.
 // already(이미 로그인) 신호는 응답 힌트로만 쓰고, LoggedIn 전이는 항상
 // waitForLogin 의 robust ConfirmLogin 을 통과해야 한다(weak already 거부).
-// newBS/Start/Fetch 패닉 시 복구해 세션을 정리하고 error 로 반환한다(HTTP 프로세스 보호).
+//
+// 동시성: startMu 로 Start/Fetch 단계를 직렬화하고, 설치 시점에 generation 을
+// 검증해 도중 Logout/다른 무효화가 있으면 늦게 도착한 세션을 반드시 Close 한다.
+// 따라서 중복 StartLogin/Logout 경합에서 오직 유효한 한 세션만 설치된다(나머지 Close).
+//
+// 패닉 안전: recover 를 newBS 호출보다 먼저 설치한다. newBS/Start/Fetch 패닉 시
+// 로컬 bs 를 닫고 매니저 세션을 정리한 뒤 error 로 반환(HTTP 프로세스 보호).
+// 패닉 발생 지점은 모두 mu 바깥이므로 recover 의 mu 재획득 데드락이 없다.
 func (m *Manager) StartLogin(ctx context.Context) (img string, already bool, err error) {
-	bs := m.newBS()
+	var bs BrowserSession
 	handedOver := false
 	defer func() {
 		if r := recover(); r != nil {
@@ -119,14 +127,21 @@ func (m *Manager) StartLogin(ctx context.Context) (img string, already bool, err
 				_ = bs.Close() // 매니저 인계 전 패닉: 로컬 bs 정리
 			}
 			m.mu.Lock()
-			m.invalidateLocked() // 인계 후 패닉: 매니저 세션 정리
+			m.invalidateLocked() // 인계 후 패닉: 매니저 세션 정리(panic-safe)
 			m.mu.Unlock()
 			err = errors.Errorf("start login panic recovered: %v", r)
 		}
 	}()
 
+	// startMu 로 StartLogin 끼리 직렬화(동시 브라우저 기동/중복 설치 방지).
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+
+	bs = m.newBS() // recover 가 이미 설치됐으므로 패닉해도 안전
+
 	m.mu.Lock()
 	m.invalidateLocked() // 중복 QR 교체: 기존 세션/진행 중 로그인 정리
+	installGen := m.gen  // 이 세대가 유지돼야만 설치 허용
 	m.mu.Unlock()
 
 	if err = bs.Start(ctx); err != nil {
@@ -139,20 +154,27 @@ func (m *Manager) StartLogin(ctx context.Context) (img string, already bool, err
 		return "", false, errors.Wrap(err, "fetch qrcode")
 	}
 
+	// page 획득은 mu 바깥에서(rod 호출이 lock 구간에 들어가 패닉 시 데드락 방지).
+	page := bs.Page()
+
 	m.mu.Lock()
-	m.gen++
+	// generation 검증: Start/Fetch 중 Logout 등이 무효화했으면 이 세션은 폐기.
+	if m.gen != installGen {
+		m.mu.Unlock()
+		_ = bs.Close()
+		return "", false, errors.New("start login superseded by logout or replace")
+	}
 	m.bs = bs
-	m.page = bs.Page()
+	m.page = page
 	handedOver = true
 	// already 여부와 무관하게 항상 QRPending + waitForLogin 로 robust 확인한다.
 	// weak already(loggedIn 만 true)는 ConfirmLogin 가 거부해 LoggedIn 전이/영속화 안 함.
 	m.state = StateQRPending
 	lctx, cancel := context.WithTimeout(context.Background(), m.loginWait)
 	m.loginCancel = cancel
-	myGen := m.gen
 	m.mu.Unlock()
 
-	go m.waitForLogin(lctx, myGen)
+	go m.waitForLogin(lctx, installGen)
 	return img, already, nil
 }
 
@@ -285,17 +307,28 @@ func (m *Manager) expiredLocked() bool {
 }
 
 // invalidateLocked: 현재 세션/진행 중 로그인을 모두 정리(호출자가 mu 잡고 있어야 함).
+// bs.Close() 는 panic-safe 하게 호출해 상태 초기화가 항상 완료되도록 한다.
+// 그래야 호출자의 mu 해제가 빠짐없이 실행되고, 바깥 recover 가 같은 mu 를
+// 재획득하며 데드락하는 일이 없다.
 func (m *Manager) invalidateLocked() {
 	if m.loginCancel != nil {
 		m.loginCancel()
 		m.loginCancel = nil
 	}
 	if m.bs != nil {
-		_ = m.bs.Close()
+		closeBSPanicSafe(m.bs)
 		m.bs = nil
 	}
 	m.page = nil
 	m.state = StateIdle
 	m.confirmedAt = time.Time{}
 	m.gen++ // 구 goroutine 이 무효화 감지
+}
+
+// closeBSPanicSafe: bs.Close() 패닉을 복구해 무시한다.
+// invalidateLocked 가 mu 보유 중 호출되므로 Close 패닉이 전파되면 호출자의 mu 해제가
+// 누락되고 바깥 recover 의 mu 재획득이 데드락한다. 패닉을 삼켜 상태 초기화를 보장한다.
+func closeBSPanicSafe(bs BrowserSession) {
+	defer func() { _ = recover() }()
+	_ = bs.Close()
 }
